@@ -37,15 +37,32 @@ The simulator stores virtual tapes as directories on disk — no hardware requir
 
 ```bash
 lto-backup \
-  --source   /path/to/records \
-  --tapes-root /path/to/tape-store \
+  --source /path/to/records \
+  --simulator /path/to/tape-store \
   --capacity-tb 18
 ```
+
+### Real LTO Hardware (Linux, LTFS)
+
+```bash
+lto-backup \
+  --source /path/to/records \
+  --device /dev/nst0 \
+  --mount-point /mnt/lto_tape \
+  --capacity-tb 18
+```
+
+Prerequisites:
+- LTFS installed (`ltfs`, `umount`, `mt` available on `$PATH`)
+- Tape formatted with LTFS (`mkltfs -d /dev/nst0`)
+- Mount point directory exists (`mkdir -p /mnt/lto_tape`)
 
 | Flag | Required | Description |
 |---|---|---|
 | `--source DIR` | yes | Directory tree to back up |
-| `--tapes-root DIR` | yes | Directory where simulator tape directories are created |
+| `--simulator DIR` | one of | Simulator mode: directory for virtual tape directories |
+| `--device DEV` | one of | Hardware mode: tape device path (e.g. `/dev/nst0`) |
+| `--mount-point DIR` | with `--device` | LTFS mount point (e.g. `/mnt/lto_tape`) |
 | `--capacity-tb TB` | yes | Nominal tape capacity in terabytes (e.g. `18` for LTO-9) |
 | `--verbose` | no | Enable DEBUG-level logging |
 
@@ -54,34 +71,6 @@ Example output:
 ```
 Backup complete. 2 tape(s), 1438 file(s).
 ```
-
-### Real LTO Hardware (Linux, LTFS)
-
-For production use on a Linux host with an LTFS-formatted LTO drive, wire the
-`LinuxLtoTapeDrive` adapter in code (the CLI currently targets the simulator):
-
-```python
-from pathlib import Path
-from lto_backup.config.backup_config import BackupConfig
-from lto_backup.wiring.container import build_ltfs_backup_service
-
-config = BackupConfig(
-    source_root=Path("/mnt/records"),
-    tapes_root=Path("/mnt/records"),        # unused by LTFS driver
-    tape_nominal_capacity_bytes=18_000_000_000_000,
-)
-service = build_ltfs_backup_service(
-    config,
-    device=Path("/dev/nst0"),
-    mount_point=Path("/mnt/lto_tape"),
-)
-catalog = service.run(config)
-```
-
-Prerequisites:
-- LTFS installed (`ltfs`, `umount`, `mt` available on `$PATH`)
-- Tape formatted with LTFS (`mkltfs -d /dev/nst0`)
-- Mount point directory exists (`mkdir -p /mnt/lto_tape`)
 
 ### Tape switching (multi-tape backups)
 
