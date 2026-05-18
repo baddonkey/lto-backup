@@ -34,6 +34,8 @@ class SourceScanner:
             ) from exc
 
         results: list[SourceFile] = []
+        total = len(paths)
+        logger.info("SourceScanner: %d file(s) to scan", total)
         for absolute_path in paths:
             relative = absolute_path.relative_to(source_root)
             relative_posix = relative.as_posix()
@@ -53,6 +55,9 @@ class SourceScanner:
             )
             logger.debug("Scanned file: %s", source_file)
             results.append(source_file)
+            n = len(results)
+            if n % 100 == 0:
+                logger.info("SourceScanner: scanned %d / %d file(s) …", n, total)
 
         total_bytes = sum(f.size_bytes for f in results)
         logger.info(
