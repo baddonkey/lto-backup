@@ -93,33 +93,104 @@ The simulator must support:
 
 ## Implementation Roadmap
 
-The first pass (repository skeleton, domain classes, interfaces, `JsonCatalogSerializer`, and unit tests) is complete.
-`SimulatorTapeDrive` is also implemented.
+All planned work is complete.
 
-Remaining work in order:
+| # | Component | Status |
+|---|---|---|
+| 1 | `SimulatorTapeDrive` | ✓ done |
+| 2 | `SourceScanner` | ✓ done |
+| 3 | `BackupPlanner` | ✓ done |
+| 4 | `BackupWriter` | ✓ done |
+| 5 | `CatalogService` | ✓ done |
+| 6 | `VerificationService` | ✓ done |
+| 7 | `TapeSwitchService` | ✓ done |
+| 8 | `LinuxLtoTapeDrive` (LTFS) | ✓ done |
+| 9 | `wiring/container.py` (DI composition root) | ✓ done |
+| 10 | CLI with `--simulator` / `--device` flag | ✓ done |
+| 11 | Simulator integration test (backup → verify) | ✓ done |
 
-1. ~~**Simulator tape drive** — `SimulatorTapeDrive` implementing `TapeDrive`~~ ✓ done
-2. **Source scanner** — walk source directory, hash files, produce `SourceFile` list
-3. **Backup planner** — allocate files to tapes, create segments, produce `BackupPlan`
-4. **Backup writer** — execute a `BackupPlan` against a `TapeDrive`
-5. **Catalog service** — build and write `Catalog` to every tape
-6. **Verification service** — re-read files, verify checksums
-7. **CLI** — wire everything together via `wiring/container.py` (DI composition root)
-8. **Simulator integration test** — full backup → verify flow against the simulator
+---
 
-### Planner Test Requirements
+## Backup Pipeline
+
+Each backup run executes four stages:
+
+1. **Scan** — `SourceScanner` walks `source_root`, computes SHA-256 for every file, records size and `modified_at`.
+2. **Plan** — `BackupPlanner` uses the two-pass catalog sizing strategy to compute `reserved_catalog_bytes`, then distributes files and file-slices across tapes. Files larger than one tape are split. `TapeSegment.sha256` is set to `""` at planning time.
+3. **Write** — `BackupWriter` streams each segment to the tape drive, verifies the full-file SHA-256 matches the scanned value (raises `SourceFileChangedError` if not), computes per-segment SHA-256 after slicing, and returns a `dict[segment_id, sha256]`.
+4. **Catalog** — `CatalogService` fills segment SHA-256s via `dataclasses.replace`, serializes the catalog to JSON, and writes `catalog/catalog.json` + `catalog/catalog.sha256` to every tape.
+
+---
+
+## Tape Switching
+
+`TapeSwitchService.request_and_load(tape_id, sequence_number)` prompts the operator via `UserPrompt` to insert the next tape, then calls `TapeDrive.load_tape`. On `TapeNotLoadedError` it retries up to `max_retries` (default 5) times before re-raising.
+
+---
+
+## Verification
+
+`VerificationService.verify(catalog) -> list[str]` iterates every tape in the catalog, loads it, re-hashes `catalog/catalog.json` and compares against `catalog/catalog.sha256`, then re-hashes every data segment and compares against `catalog.segments[*].sha256`. Returns a list of error strings; an empty list means all tapes are clean.
+
+---
+
+## LinuxLtoTapeDrive (LTFS)
+
+`LinuxLtoTapeDrive(device: Path, mount_point: Path)` implements `TapeDrive` using LTFS:
+
+- `load_tape` — runs `ltfs {device}` to mount at `{mount_point}`. Raises `TapeNotLoadedError` on failure.
+- `unload_tape` — runs `umount {mount_point}` then `mt -f {device} offline`.
+- `write_file` — writes to `{mount_point}/data/{filename}`. Raises `TapeFullError` on `ENOSPC`.
+- `read_file` — reads from `{mount_point}/data/{filename}`.
+- `list_files` — lists `{mount_point}/data/`.
+
+Required system tools: `ltfs`, `umount`, `mt` (on `$PATH`). Tape must be pre-formatted with `mkltfs -d {device}`.
+
+---
+
+## Simulator — Virtual Tape Layout
+
+```
+<tapes-root>/
+  BACKUP-001/
+    data/
+      records__case-001__video.bin.part1
+      records__case-001__video.bin.part2
+    catalog/
+      catalog.json
+      catalog.sha256
+    tape.json
+  BACKUP-002/
+    data/
+    catalog/
+    tape.json
+```
+
+`SimulatorFailureConfig` enables failure injection for testing:
+
+| Field | Effect |
+|---|---|
+| `fail_on_write` | Raise `FileWriteError` on every write |
+| `fail_on_read` | Raise `FileWriteError` on every read |
+| `fail_on_load` | Raise `TapeNotLoadedError` on every load |
+| `fail_after_bytes_written` | Raise `TapeFullError` after N bytes written |
+| `failed_tape_ids` | Restrict injection to specific tape IDs |
+
+---
+
+## Planner Test Requirements (reference)
 
 1. All files fit on one tape.
 2. Multiple files span multiple tapes.
-3. A single large file splits across tapes.
-4. A single large file splits across tapes.
-5. Computed catalog reserve (two-pass) reduces usable capacity.
-6. Invalid capacity raises `BackupPlanError`.
+3. A single large file splits across two tapes.
+4. Computed catalog reserve (two-pass) reduces usable capacity.
+5. Invalid capacity raises `BackupPlanError`.
 
-### Simulator Test Requirements
+## Simulator Test Requirements (reference)
 
 1. Load and unload tape.
 2. Write until capacity is reached.
 3. Raise `TapeFullError` when capacity is exceeded.
 4. List written files.
 5. Read written files.
+6. Failure injection via `SimulatorFailureConfig`.
