@@ -1,0 +1,16 @@
+from dataclasses import dataclass, field
+
+from lto_backup.domain.container import Container
+from lto_backup.domain.source_file import SourceFile
+from lto_backup.domain.tape import Tape
+from lto_backup.domain.tape_segment import TapeSegment
+
+
+@dataclass(frozen=True)
+class BackupPlan:
+    backup_set_id: str
+    source_root: str
+    tapes: list[Tape] = field(default_factory=list)
+    source_files: list[SourceFile] = field(default_factory=list)
+    containers: list[Container] = field(default_factory=list)
+    segments: list[TapeSegment] = field(default_factory=list)
