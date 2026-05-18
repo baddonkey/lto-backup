@@ -3,7 +3,6 @@ from datetime import UTC, datetime
 import pytest
 
 from lto_backup.domain.catalog import Catalog
-from lto_backup.domain.container import Container
 from lto_backup.domain.source_file import SourceFile
 from lto_backup.domain.tape import Tape
 from lto_backup.domain.tape_segment import TapeSegment
@@ -27,22 +26,13 @@ def _make_catalog() -> Catalog:
         sha256="abc123",
         modified_at=datetime(2026, 1, 15, 10, 30, 0, tzinfo=UTC),
     )
-    container = Container(
-        container_id="CONT-001",
-        tape_id="TAPE-001",
-        name="backup-000001.container",
-        size_bytes=1_073_741_824,
-        sha256="def456",
-        segment_ids=["SEG-001"],
-    )
     segment = TapeSegment(
         segment_id="SEG-001",
         file_id="FILE-001",
         tape_id="TAPE-001",
-        container_id="CONT-001",
+        tape_offset=0,
         source_offset=0,
         length_bytes=1_073_741_824,
-        container_offset=0,
         sha256="ghi789",
     )
     return Catalog(
@@ -52,7 +42,6 @@ def _make_catalog() -> Catalog:
         source_root="/data/records",
         tapes=[tape],
         source_files=[source_file],
-        containers=[container],
         segments=[segment],
     )
 
@@ -95,19 +84,13 @@ class TestJsonCatalogSerializer:
         assert len(restored.source_files) == 1
         assert restored.source_files[0].file_id == "FILE-001"
 
-    def test_round_trip_preserves_container(self) -> None:
-        catalog = _make_catalog()
-        data = self.serializer.serialize(catalog)
-        restored = self.serializer.deserialize(data)
-        assert len(restored.containers) == 1
-        assert restored.containers[0].segment_ids == ["SEG-001"]
-
     def test_round_trip_preserves_segment(self) -> None:
         catalog = _make_catalog()
         data = self.serializer.serialize(catalog)
         restored = self.serializer.deserialize(data)
         assert len(restored.segments) == 1
         assert restored.segments[0].source_offset == 0
+        assert restored.segments[0].tape_offset == 0
 
     def test_datetime_round_trip_utc(self) -> None:
         catalog = _make_catalog()

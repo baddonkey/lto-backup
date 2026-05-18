@@ -20,15 +20,14 @@ The catalog must include:
 - Source root
 - Tape list
 - Source file list
-- Container list
 - Segment list
 - Checksums
-- File offsets and segment offsets
+- File offsets and tape offsets
 - Split-file information
 
-### Container Files
+### Plain File Storage
 
-Source files are **not** written directly to tape as loose files. The application writes generated backup container files. A container holds one or more file segments plus the metadata needed to verify and restore them.
+Source files are written directly to tape as plain files. Each file is written sequentially. The catalog records the exact byte offset on tape where each segment starts, enabling precise restore without any intermediate packaging.
 
 ### Split Files Across Tapes
 
@@ -55,7 +54,7 @@ usable_capacity = nominal_capacity - reserved_catalog_bytes
 
 1. **Scan** the source directory to produce the full `list[SourceFile]`.
 2. **Build a draft catalog** containing only the file list (no segments yet) and serialize it to measure its size. That measured size becomes `reserved_catalog_bytes` for every tape in the set.
-3. **Plan** container and tape assignments using that reserve.
+3. **Plan** tape assignments using that reserve.
 4. **Finalize** the catalog by adding segment records (split metadata is negligible in size). Assert the final catalog fits within the reserved space.
 
 This means the only capacity-related parameter the user provides is `--tape-capacity`.
@@ -68,8 +67,8 @@ This means the only capacity-related parameter the user provides is `--tape-capa
 .simulator_tapes/
   BACKUP-001/
     data/
-      backup-000001.container
-      backup-000002.container
+      records__case-001__video.bin.part1
+      records__case-001__video.bin.part2
     catalog/
       catalog.json
       catalog.sha256
@@ -101,11 +100,11 @@ Remaining work in order:
 
 1. ~~**Simulator tape drive** — `SimulatorTapeDrive` implementing `TapeDrive`~~ ✓ done
 2. **Source scanner** — walk source directory, hash files, produce `SourceFile` list
-3. **Backup planner** — allocate files to tapes, create segments and containers, produce `BackupPlan`
+3. **Backup planner** — allocate files to tapes, create segments, produce `BackupPlan`
 4. **Backup writer** — execute a `BackupPlan` against a `TapeDrive`
 5. **Catalog service** — build and write `Catalog` to every tape
-6. **Verification service** — re-read containers, verify checksums
-7. **CLI** — wire everything together via `wiring/container.py`
+6. **Verification service** — re-read files, verify checksums
+7. **CLI** — wire everything together via `wiring/container.py` (DI composition root)
 8. **Simulator integration test** — full backup → verify flow against the simulator
 
 ### Planner Test Requirements
@@ -113,7 +112,7 @@ Remaining work in order:
 1. All files fit on one tape.
 2. Multiple files span multiple tapes.
 3. A single large file splits across tapes.
-4. Container max size forces multiple containers.
+4. A single large file splits across tapes.
 5. Computed catalog reserve (two-pass) reduces usable capacity.
 6. Invalid capacity raises `BackupPlanError`.
 

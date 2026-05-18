@@ -7,7 +7,7 @@ A Python 3.12+ application that backs up a file-based records management system 
 - Scan a source directory and create a backup plan.
 - Split backups across multiple tapes.
 - Split large files across tape boundaries.
-- Write data as structured container files (not loose files).
+- Write source files directly to tape (plain files, no intermediate packaging).
 - Store a full catalog on every tape in the backup set.
 - Simulate a tape drive on disk for development and testing.
 - Pluggable design — swap the simulator for real LTO hardware.
