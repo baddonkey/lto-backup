@@ -4,6 +4,7 @@ Python 3.12+ application that backs up a file-based records management system to
 
 ## Non-Negotiable Rules
 
+- **NEVER run `git commit` or `git push` uninstructed — only run them when the user explicitly asks.**
 - One production class per file.
 - Dependency injection — never instantiate concrete infrastructure inside services or domain classes.
 - `typing.Protocol` or ABCs for all infrastructure interfaces.

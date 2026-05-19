@@ -28,6 +28,8 @@ Run in this order and fix any issues before finishing:
 mypy && pytest
 ```
 
+**NEVER run `git commit` or `git push` uninstructed. Only run them when the user explicitly asks.**
+
 ## Constraints
 
 - DO NOT introduce real LTO hardware code until the simulator flow passes end-to-end.

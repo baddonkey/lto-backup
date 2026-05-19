@@ -27,6 +27,8 @@ pytest tests/                        # confirm all green
 pytest --tb=short tests/unit/        # quick failure summary if needed
 ```
 
+**NEVER run `git commit` or `git push` uninstructed. Only run them when the user explicitly asks.**
+
 ## Constraints
 
 - DO NOT modify any file under `src/`.

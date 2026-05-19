@@ -4,12 +4,13 @@ from datetime import datetime
 from typing import Any
 
 from lto_backup.domain.catalog import Catalog
+from lto_backup.domain.container import Container
 from lto_backup.domain.source_file import SourceFile
 from lto_backup.domain.tape import Tape
 from lto_backup.domain.tape_segment import TapeSegment
 from lto_backup.exceptions.catalog_write_error import CatalogWriteError
 
-_SCHEMA_VERSION = "1.0"
+_SCHEMA_VERSION = "2.0"
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +32,7 @@ class JsonCatalogSerializer:
                 "created_at": catalog.created_at.isoformat(),
                 "source_root": catalog.source_root,
                 "tapes": [self._tape_to_dict(t) for t in catalog.tapes],
+                "containers": [self._container_to_dict(c) for c in catalog.containers],
                 "source_files": [self._source_file_to_dict(f) for f in catalog.source_files],
                 "segments": [self._segment_to_dict(s) for s in catalog.segments],
             }
@@ -55,6 +57,9 @@ class JsonCatalogSerializer:
                 created_at=datetime.fromisoformat(payload["created_at"]),
                 source_root=payload["source_root"],
                 tapes=[self._tape_from_dict(t) for t in payload.get("tapes", [])],
+                containers=[
+                    self._container_from_dict(c) for c in payload.get("containers", [])
+                ],
                 source_files=[
                     self._source_file_from_dict(f) for f in payload.get("source_files", [])
                 ],
@@ -86,6 +91,17 @@ class JsonCatalogSerializer:
         }
 
     @staticmethod
+    def _container_to_dict(c: Container) -> dict[str, Any]:
+        return {
+            "container_id": c.container_id,
+            "backup_set_id": c.backup_set_id,
+            "tape_id": c.tape_id,
+            "sequence_number": c.sequence_number,
+            "tape_offset": c.tape_offset,
+            "size_bytes": c.size_bytes,
+        }
+
+    @staticmethod
     def _source_file_to_dict(sf: SourceFile) -> dict[str, Any]:
         return {
             "file_id": sf.file_id,
@@ -101,8 +117,8 @@ class JsonCatalogSerializer:
         return {
             "segment_id": s.segment_id,
             "file_id": s.file_id,
-            "tape_id": s.tape_id,
-            "tape_offset": s.tape_offset,
+            "container_id": s.container_id,
+            "container_offset": s.container_offset,
             "source_offset": s.source_offset,
             "length_bytes": s.length_bytes,
             "sha256": s.sha256,
@@ -123,6 +139,17 @@ class JsonCatalogSerializer:
         )
 
     @staticmethod
+    def _container_from_dict(d: dict[str, Any]) -> Container:
+        return Container(
+            container_id=str(d["container_id"]),
+            backup_set_id=str(d["backup_set_id"]),
+            tape_id=str(d["tape_id"]),
+            sequence_number=int(d["sequence_number"]),
+            tape_offset=int(d["tape_offset"]),
+            size_bytes=int(d["size_bytes"]),
+        )
+
+    @staticmethod
     def _source_file_from_dict(d: dict[str, Any]) -> SourceFile:
         return SourceFile(
             file_id=str(d["file_id"]),
@@ -138,8 +165,8 @@ class JsonCatalogSerializer:
         return TapeSegment(
             segment_id=str(d["segment_id"]),
             file_id=str(d["file_id"]),
-            tape_id=str(d["tape_id"]),
-            tape_offset=int(d["tape_offset"]),
+            container_id=str(d["container_id"]),
+            container_offset=int(d["container_offset"]),
             source_offset=int(d["source_offset"]),
             length_bytes=int(d["length_bytes"]),
             sha256=str(d["sha256"]),

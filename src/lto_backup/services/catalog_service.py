@@ -13,7 +13,7 @@ from lto_backup.interfaces.tape_drive import TapeDrive
 
 logger = logging.getLogger(__name__)
 
-_SCHEMA_VERSION = "1.0"
+_SCHEMA_VERSION = "2.0"
 _CATALOG_PATH = "catalog/catalog.json"
 _CHECKSUM_PATH = "catalog/catalog.sha256"
 
@@ -38,6 +38,7 @@ class CatalogService:
             created_at=self._clock.now(),
             source_root=plan.source_root,
             tapes=plan.tapes,
+            containers=plan.containers,
             source_files=plan.source_files,
             segments=segments,
         )

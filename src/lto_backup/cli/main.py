@@ -1,6 +1,7 @@
 """CLI entry point for lto-backup."""
 
 import argparse
+import logging
 import sys
 from pathlib import Path
 
@@ -10,6 +11,9 @@ from lto_backup.exceptions.backup_error import BackupError
 from lto_backup.wiring.container import build_backup_service, build_ltfs_backup_service
 
 _BYTES_PER_TB = 1_000_000_000_000
+_BYTES_PER_GB = 1_000_000_000
+
+logger = logging.getLogger(__name__)
 
 
 def main() -> None:
@@ -29,6 +33,13 @@ def main() -> None:
         type=float,
         metavar="TB",
         help="Nominal tape capacity in terabytes.",
+    )
+    parser.add_argument(
+        "--container-size-gb",
+        required=True,
+        type=float,
+        metavar="GB",
+        help="Maximum container size in gigabytes.",
     )
     parser.add_argument(
         "--verbose",
@@ -66,6 +77,7 @@ def main() -> None:
         source_root=Path(args.source),
         tapes_root=Path(args.simulator) if args.simulator else Path(args.mount_point),
         tape_nominal_capacity_bytes=int(args.capacity_tb * _BYTES_PER_TB),
+        max_container_size_bytes=int(args.container_size_gb * _BYTES_PER_GB),
     )
 
     try:
@@ -79,6 +91,7 @@ def main() -> None:
             )
         catalog = service.run(config)
     except BackupError as exc:
+        logger.error("Backup failed: %s", exc)
         print(f"Error: {exc}", file=sys.stderr)
         sys.exit(1)
 

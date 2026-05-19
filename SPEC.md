@@ -10,6 +10,12 @@ A backup set is one complete backup operation. It may span multiple tapes.
 
 A tape is a logical LTO cartridge. In simulator mode a tape is represented by a directory on disk.
 
+### Container
+
+A container is a fixed-size logical block written as a single file onto a tape. Source files and file-slices are packed sequentially into containers. A container never spans two tapes — it lives entirely on one tape.
+
+The user controls container size via `--container-size-gb`. Typical values: 100 GB–500 GB. Smaller containers reduce recovery scope per read error; larger containers reduce catalog overhead.
+
 ### Catalog
 
 A catalog is the complete manifest for the whole backup set. A full copy must be written to **every** tape in the backup set.
@@ -19,30 +25,24 @@ The catalog must include:
 - Backup set ID
 - Source root
 - Tape list
+- Container list (with tape ID and tape offset per container)
 - Source file list
-- Segment list
-- Checksums
-- File offsets and tape offsets
-- Split-file information
+- Segment list (with container ID, container offset, source offset, length, SHA-256)
+- Timestamps
 
-### Plain File Storage
+### Split Files Across Containers and Tapes
 
-Source files are written directly to tape as plain files. Each file is written sequentially. The catalog records the exact byte offset on tape where each segment starts, enabling precise restore without any intermediate packaging.
-
-### Split Files Across Tapes
-
-If a source file does not fit in the remaining space on the current tape, it is split across tapes.
+If a source file does not fit in the remaining space of the current container, the remainder spills into the next container. If no container fits on the current tape, a new tape is started.
 
 Example:
 
 ```
-source file : records/case-001/video.bin
-size        : 140 GB
-tape 001    : 40 GB remaining  → segment 1 (offset 0,       length 40 GB)
-tape 002    : 100 GB usable    → segment 2 (offset 40 GB,   length 100 GB)
+source file  : records/case-001/video.bin  (140 GB)
+container-01 : tape-001, 40 GB remaining   → segment 1 (source_offset=0,    length=40 GB)
+container-02 : tape-002, 100 GB capacity   → segment 2 (source_offset=40 GB, length=100 GB)
 ```
 
-Every segment must be recorded in the catalog.
+Every segment is recorded in the catalog with its container ID and byte offset within that container.
 
 ### Tape Capacity
 
@@ -50,30 +50,27 @@ Every segment must be recorded in the catalog.
 usable_capacity = nominal_capacity - reserved_catalog_bytes
 ```
 
-`reserved_catalog_bytes` is **not** a user-facing parameter. The planner computes it automatically using a two-pass approach:
+`reserved_catalog_bytes` is **not** a user-facing parameter. The planner computes it automatically using a three-pass approach:
 
-1. **Scan** the source directory to produce the full `list[SourceFile]`.
-2. **Build a draft catalog** containing only the file list (no segments yet) and serialize it to measure its size. That measured size becomes `reserved_catalog_bytes` for every tape in the set.
-3. **Plan** tape assignments using that reserve.
-4. **Finalize** the catalog by adding segment records (split metadata is negligible in size). Assert the final catalog fits within the reserved space.
-
-This means the only capacity-related parameter the user provides is `--tape-capacity`.
+1. **Draft catalog** — build a catalog containing only the source file list (no containers or segments yet) and serialize it to measure its baseline size. That size becomes `reserved_catalog_bytes` for every tape.
+2. **Pack containers** — distribute source files and file-slices into containers of at most `max_container_size_bytes`, then assign containers to tapes respecting `usable_capacity`.
+3. **Finalize** — assemble the full plan with all containers and segments.
 
 ---
 
 ## Simulator — Virtual Tape Layout
 
 ```
-.simulator_tapes/
-  BACKUP-001/
+<tapes-root>/
+  TAPE-001/
     data/
-      records__case-001__video.bin.part1
-      records__case-001__video.bin.part2
+      container-0001.bin
+      container-0002.bin
     catalog/
       catalog.json
       catalog.sha256
     tape.json
-  BACKUP-002/
+  TAPE-002/
     data/
     catalog/
     tape.json
@@ -82,8 +79,7 @@ This means the only capacity-related parameter the user provides is `--tape-capa
 The simulator must support:
 
 - Load / unload a tape
-- Write bytes and write files
-- Read files
+- Write and read files
 - List files
 - Capacity tracking
 - Raise `TapeFullError` when a write exceeds remaining capacity
@@ -116,8 +112,8 @@ All planned work is complete.
 Each backup run executes four stages:
 
 1. **Scan** — `SourceScanner` walks `source_root`, computes SHA-256 for every file, records size and `modified_at`.
-2. **Plan** — `BackupPlanner` uses the two-pass catalog sizing strategy to compute `reserved_catalog_bytes`, then distributes files and file-slices across tapes. Files larger than one tape are split. `TapeSegment.sha256` is set to `""` at planning time.
-3. **Write** — `BackupWriter` streams each segment to the tape drive, verifies the full-file SHA-256 matches the scanned value (raises `SourceFileChangedError` if not), computes per-segment SHA-256 after slicing, and returns a `dict[segment_id, sha256]`.
+2. **Plan** — `BackupPlanner` uses the three-pass algorithm to compute `reserved_catalog_bytes`, then packs source files into containers (≤ `max_container_size_bytes` each) and assigns containers to tapes. Files larger than one container are split across container boundaries. `TapeSegment.sha256` is set to `""` at planning time.
+3. **Write** — `BackupWriter` iterates tapes and containers in order. For each container it collects all its segments, reads the corresponding file slices from disk, verifies the full-file SHA-256 against the scanned value (raises `SourceFileChangedError` if not), concatenates the slices, writes the container as a single blob to tape, and records per-segment SHA-256s. Returns a `dict[segment_id, sha256]`.
 4. **Catalog** — `CatalogService` fills segment SHA-256s via `dataclasses.replace`, serializes the catalog to JSON, and writes `catalog/catalog.json` + `catalog/catalog.sha256` to every tape.
 
 ---
@@ -130,7 +126,7 @@ Each backup run executes four stages:
 
 ## Verification
 
-`VerificationService.verify(catalog) -> list[str]` iterates every tape in the catalog, loads it, re-hashes `catalog/catalog.json` and compares against `catalog/catalog.sha256`, then re-hashes every data segment and compares against `catalog.segments[*].sha256`. Returns a list of error strings; an empty list means all tapes are clean.
+`VerificationService.verify(catalog) -> list[str]` iterates every tape in the catalog, loads it, re-hashes `catalog/catalog.json` and compares against `catalog/catalog.sha256`, then for each container on that tape reads the container blob, slices out each segment's bytes, re-hashes them, and compares against `catalog.segments[*].sha256`. Returns a list of error strings; an empty list means all tapes are clean.
 
 ---
 
@@ -180,11 +176,12 @@ Required system tools: `ltfs`, `umount`, `mt` (on `$PATH`). Tape must be pre-for
 
 ## Planner Test Requirements (reference)
 
-1. All files fit on one tape.
-2. Multiple files span multiple tapes.
-3. A single large file splits across two tapes.
-4. Computed catalog reserve (two-pass) reduces usable capacity.
-5. Invalid capacity raises `BackupPlanError`.
+1. All files fit in one container on one tape.
+2. Multiple files fill multiple containers across multiple tapes.
+3. A single large file splits across container boundaries (and tape boundaries).
+4. Computed catalog reserve (three-pass) reduces usable capacity.
+5. `max_container_size_bytes` exceeding usable capacity raises `BackupPlanError`.
+6. Invalid capacity raises `BackupPlanError`.
 
 ## Simulator Test Requirements (reference)
 

@@ -1,8 +1,10 @@
 """VerificationService — reads tape contents and verifies checksums."""
 
 import logging
+from collections import defaultdict
 
 from lto_backup.domain.catalog import Catalog
+from lto_backup.domain.tape_segment import TapeSegment
 from lto_backup.interfaces.catalog_serializer import CatalogSerializer
 from lto_backup.interfaces.file_hasher import FileHasher
 from lto_backup.interfaces.tape_drive import TapeDrive
@@ -49,7 +51,7 @@ class VerificationService:
             self._tape_drive.load_tape(tape_id)
             loaded = True
             errors.extend(self._check_catalog_checksum(tape_id))
-            errors.extend(self._check_segments(catalog, tape_id))
+            errors.extend(self._check_containers(catalog, tape_id))
         except Exception as exc:
             msg = f"Tape {tape_id}: operation failed: {exc}"
             logger.warning(msg)
@@ -72,20 +74,30 @@ class VerificationService:
             return [msg]
         return []
 
-    def _check_segments(self, catalog: Catalog, tape_id: str) -> list[str]:
+    def _check_containers(self, catalog: Catalog, tape_id: str) -> list[str]:
         errors: list[str] = []
-        for segment in catalog.segments:
-            if segment.tape_id != tape_id:
+
+        # Build lookup: container_id → list[TapeSegment]
+        segments_by_container: dict[str, list[TapeSegment]] = defaultdict(list)
+        for seg in catalog.segments:
+            segments_by_container[seg.container_id].append(seg)
+
+        for container in catalog.containers:
+            if container.tape_id != tape_id:
                 continue
-            data = self._tape_drive.read_file(segment.segment_id)
-            actual_hash = self._file_hasher.hash_bytes(data)
-            if actual_hash != segment.sha256:
-                msg = (
-                    f"Tape {tape_id}: segment {segment.segment_id} "
-                    f"checksum mismatch "
-                    f"(expected {segment.sha256}, got {actual_hash})"
-                )
-                logger.warning(msg)
-                errors.append(msg)
+            container_data = self._tape_drive.read_file(container.container_id)
+            for segment in segments_by_container.get(container.container_id, []):
+                actual_data = container_data[
+                    segment.container_offset : segment.container_offset + segment.length_bytes
+                ]
+                actual_hash = self._file_hasher.hash_bytes(actual_data)
+                if actual_hash != segment.sha256:
+                    msg = (
+                        f"Tape {tape_id}: segment {segment.segment_id} "
+                        f"checksum mismatch "
+                        f"(expected {segment.sha256}, got {actual_hash})"
+                    )
+                    logger.warning(msg)
+                    errors.append(msg)
         return errors
 

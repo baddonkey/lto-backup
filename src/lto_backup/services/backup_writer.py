@@ -1,4 +1,4 @@
-"""BackupWriter service — writes a BackupPlan to tape(s)."""
+"""BackupWriter service — writes a BackupPlan to tape(s) using container-based layout."""
 
 import hashlib
 import logging
@@ -6,6 +6,7 @@ from collections import defaultdict
 from pathlib import Path
 
 from lto_backup.domain.backup_plan import BackupPlan
+from lto_backup.domain.container import Container
 from lto_backup.domain.source_file import SourceFile
 from lto_backup.domain.tape_segment import TapeSegment
 from lto_backup.exceptions.backup_plan_error import BackupPlanError
@@ -21,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 
 class BackupWriter:
-    """Writes every segment in a BackupPlan to the appropriate tape(s)."""
+    """Writes every container in a BackupPlan to the appropriate tape(s)."""
 
     def __init__(
         self,
@@ -34,7 +35,7 @@ class BackupWriter:
         self._file_hasher = file_hasher
 
     def write(self, plan: BackupPlan) -> dict[str, str]:
-        """Execute the plan: load each tape, write its segments, then unload it.
+        """Execute the plan: load each tape, write its containers, then unload it.
 
         Returns a mapping of segment_id → sha256 of the bytes actually written
         (i.e. the hash of the slice, not the full file).
@@ -45,10 +46,19 @@ class BackupWriter:
             logger.info("BackupWriter: plan is empty, nothing to write.")
             return sha256_map
 
-        # Build a lookup: tape_id → list[TapeSegment] preserving plan order.
-        segments_by_tape: dict[str, list[TapeSegment]] = defaultdict(list)
+        # Build lookup: tape_id → list[Container] sorted by sequence_number.
+        containers_by_tape: dict[str, list[Container]] = defaultdict(list)
+        for container in plan.containers:
+            containers_by_tape[container.tape_id].append(container)
+        for tape_id in containers_by_tape:
+            containers_by_tape[tape_id].sort(key=lambda c: c.sequence_number)
+
+        # Build lookup: container_id → list[TapeSegment] sorted by container_offset.
+        segments_by_container: dict[str, list[TapeSegment]] = defaultdict(list)
         for segment in plan.segments:
-            segments_by_tape[segment.tape_id].append(segment)
+            segments_by_container[segment.container_id].append(segment)
+        for cid in segments_by_container:
+            segments_by_container[cid].sort(key=lambda s: s.container_offset)
 
         # Build lookups: file_id → path and file_id → SourceFile.
         path_by_file_id: dict[str, Path] = {
@@ -58,12 +68,17 @@ class BackupWriter:
             sf.file_id: sf for sf in plan.source_files
         }
 
+        # File data and verification caches — shared across all tapes so that
+        # files split across tape boundaries are read and verified only once.
+        file_data_cache: dict[str, bytes] = {}
+        verified_file_ids: set[str] = set()
+
         for tape in plan.tapes:
-            tape_segments = segments_by_tape.get(tape.tape_id, [])
+            tape_containers = containers_by_tape.get(tape.tape_id, [])
             logger.info(
-                "BackupWriter: loading tape %s (%d segment(s) to write)",
+                "BackupWriter: loading tape %s (%d container(s) to write)",
                 tape.tape_id,
-                len(tape_segments),
+                len(tape_containers),
             )
             try:
                 self._tape_drive.load_tape(tape.tape_id)
@@ -74,39 +89,68 @@ class BackupWriter:
 
             bytes_written = 0
             try:
-                for segment in tape_segments:
-                    file_path = path_by_file_id[segment.file_id]
-                    file_data = self._file_system.open_for_read(file_path)
+                for container in tape_containers:
+                    buffer = bytearray(container.size_bytes)
+                    segments = segments_by_container.get(container.container_id, [])
 
-                    # Verify the full file has not changed since scanning.
-                    actual_file_sha256 = self._file_hasher.hash_bytes(file_data)
-                    source_file = source_file_by_id[segment.file_id]
-                    if actual_file_sha256 != source_file.sha256:
-                        raise SourceFileChangedError(
-                            f"File {segment.file_id!r} has changed since planning: "
-                            f"expected sha256 {source_file.sha256!r}, "
-                            f"got {actual_file_sha256!r}."
+                    for segment in segments:
+                        file_id = segment.file_id
+                        file_path = path_by_file_id[file_id]
+
+                        # Load file data into cache on first access.
+                        if file_id not in file_data_cache:
+                            file_data_cache[file_id] = self._file_system.open_for_read(
+                                file_path
+                            )
+
+                        file_data = file_data_cache[file_id]
+
+                        # Verify full-file sha256 exactly once per file.
+                        if file_id not in verified_file_ids:
+                            actual_sha256 = self._file_hasher.hash_bytes(file_data)
+                            source_file = source_file_by_id[file_id]
+                            if actual_sha256 != source_file.sha256:
+                                raise SourceFileChangedError(
+                                    f"File {file_id!r} has changed since planning: "
+                                    f"expected sha256 {source_file.sha256!r}, "
+                                    f"got {actual_sha256!r}."
+                                )
+                            verified_file_ids.add(file_id)
+
+                        chunk = file_data[
+                            segment.source_offset : segment.source_offset
+                            + segment.length_bytes
+                        ]
+                        slice_sha256 = hashlib.sha256(chunk).hexdigest()
+                        sha256_map[segment.segment_id] = slice_sha256
+
+                        buffer[
+                            segment.container_offset : segment.container_offset
+                            + segment.length_bytes
+                        ] = chunk
+
+                        logger.debug(
+                            "BackupWriter: packed segment %s into container %s "
+                            "at offset %d (%d bytes)",
+                            segment.segment_id,
+                            container.container_id,
+                            segment.container_offset,
+                            len(chunk),
                         )
 
-                    chunk = file_data[
-                        segment.source_offset : segment.source_offset + segment.length_bytes
-                    ]
-                    slice_sha256 = hashlib.sha256(chunk).hexdigest()
-                    sha256_map[segment.segment_id] = slice_sha256
-
                     logger.debug(
-                        "BackupWriter: writing segment %s (%d bytes)",
-                        segment.segment_id,
-                        len(chunk),
+                        "BackupWriter: writing container %s (%d bytes)",
+                        container.container_id,
+                        container.size_bytes,
                     )
                     try:
-                        self._tape_drive.write_bytes(segment.segment_id, chunk)
+                        self._tape_drive.write_bytes(container.container_id, bytes(buffer))
                     except TapeFullError as exc:
                         raise FileWriteError(
-                            f"Tape full while writing segment {segment.segment_id!r}."
+                            f"Tape full while writing container {container.container_id!r}."
                         ) from exc
 
-                    bytes_written += len(chunk)
+                    bytes_written += container.size_bytes
             finally:
                 self._tape_drive.unload_tape()
 

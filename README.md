@@ -5,9 +5,9 @@ A Python 3.12+ application that backs up a file-based records management system 
 ## Features
 
 - Scan a source directory and produce a deterministic backup plan.
-- Distribute the backup across multiple tapes automatically.
-- Split files that are larger than a single tape across tape boundaries.
-- Write source files as plain files directly onto tape — no intermediate packaging.
+- Pack source files into fixed-size containers written as single blobs onto tape.
+- Distribute containers across multiple tapes automatically.
+- Split files that are larger than one container across container and tape boundaries.
 - Store a full JSON catalog on every tape in the backup set for self-contained recovery.
 - Verify tape contents against the catalog checksums after backup.
 - Simulate a tape drive on disk for development and testing — no hardware required.
@@ -35,7 +35,8 @@ The simulator stores virtual tapes as plain directories on disk.
 lto-backup \
   --source /path/to/records \
   --simulator /path/to/tape-store \
-  --capacity-tb 18
+  --capacity-tb 18 \
+  --container-size-gb 100
 ```
 
 ### Real LTO Hardware (Linux, LTFS)
@@ -45,7 +46,8 @@ lto-backup \
   --source /path/to/records \
   --device /dev/nst0 \
   --mount-point /mnt/lto_tape \
-  --capacity-tb 18
+  --capacity-tb 18 \
+  --container-size-gb 100
 ```
 
 Prerequisites for LTFS mode:
@@ -62,9 +64,12 @@ Prerequisites for LTFS mode:
 | `--device DEV` | one of | Hardware mode: tape device path (e.g. `/dev/nst0`) |
 | `--mount-point DIR` | with `--device` | LTFS mount point (e.g. `/mnt/lto_tape`) |
 | `--capacity-tb TB` | yes | Nominal tape capacity in terabytes (e.g. `18` for LTO-9) |
+| `--container-size-gb GB` | yes | Maximum container size in gigabytes (e.g. `100`) |
 | `--verbose` | no | Enable DEBUG-level logging |
 
 `--simulator` and `--device` are mutually exclusive; exactly one must be supplied.
+
+The `--container-size-gb` value must not exceed the usable tape capacity (nominal minus catalog reserve). Typical values are 100–500 GB. Smaller containers limit the amount of data at risk from a single read error.
 
 Example output:
 
@@ -77,9 +82,9 @@ Backup complete. 2 tape(s), 1438 file(s).
 Each run executes four stages in sequence:
 
 1. **Scan** — `SourceScanner` walks the source directory, hashes every file with SHA-256, and records size and modification time.
-2. **Plan** — `BackupPlanner` distributes files and file-slices across tapes to fit within the nominal capacity. Files larger than one tape are split across tape boundaries.
-3. **Write** — `BackupWriter` streams each file segment to tape, computes a per-segment SHA-256 after slicing, and detects source files modified mid-backup (`SourceFileChangedError`).
-4. **Catalog** — `CatalogService` assembles a `Catalog` containing every tape, source file, and segment (with checksums), serializes it to JSON, and writes it to every tape.
+2. **Plan** — `BackupPlanner` (three-pass) measures the catalog size to compute `reserved_catalog_bytes`, then packs source files into containers of at most `--container-size-gb`. Files larger than one container are split. Containers are assigned to tapes until each tape is full, then a new tape is started.
+3. **Write** — `BackupWriter` iterates tapes and containers in sequence. For each container it reads all required file slices from disk, verifies the full-file SHA-256 against the scanned value (`SourceFileChangedError` if modified), concatenates the slices into a single container blob, writes it to tape as one file, and records per-segment SHA-256s.
+4. **Catalog** — `CatalogService` fills segment SHA-256s, serializes to JSON, and writes `catalog/catalog.json` + `catalog/catalog.sha256` to every tape.
 
 ## Tape Switching (multi-tape backups)
 
@@ -106,15 +111,18 @@ The catalog is written to every tape as `catalog/catalog.json` (with a companion
 
 | Field | Description |
 |---|---|
-| `schema_version` | Catalog schema version string |
+| `schema_version` | Catalog schema version string (`2.0`) |
 | `backup_set_id` | UUID identifying this backup set |
 | `created_at` | ISO-8601 timestamp of backup creation |
 | `source_root` | Absolute path of the source directory |
 | `tapes` | List of tape objects (`tape_id`, `label`, `sequence_number`) |
+| `containers` | List of containers (`container_id`, `backup_set_id`, `tape_id`, `sequence_number`, `tape_offset`, `size_bytes`) |
 | `source_files` | List of source files (`file_id`, `path`, `size_bytes`, `sha256`, `modified_at`) |
-| `segments` | List of tape segments (`segment_id`, `file_id`, `tape_id`, `tape_offset`, `source_offset`, `length_bytes`, `sha256`) |
+| `segments` | List of tape segments (`segment_id`, `file_id`, `container_id`, `container_offset`, `source_offset`, `length_bytes`, `sha256`) |
 
-Each segment's `sha256` is the hash of that slice of bytes, not the full-file hash. Full-file hashes are stored on the `source_files` entries.
+Each segment's `sha256` is the hash of that slice of bytes within the container. Full-file hashes are stored on the `source_files` entries.
+
+To restore a file: look up its segments in the catalog → for each segment, load the tape identified by its container's `tape_id`, read the container file, slice out `container_offset` to `container_offset + length_bytes`.
 
 ## Simulator Failure Injection
 
