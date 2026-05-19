@@ -64,11 +64,14 @@ class BackupPlanner:
                 f"got {config.max_container_size_bytes}"
             )
 
-        if config.max_container_size_bytes > usable_capacity:
-            raise BackupPlanError(
-                f"max_container_size_bytes ({config.max_container_size_bytes} bytes) "
-                f"exceeds usable tape capacity ({usable_capacity} bytes); "
-                "a container must fit on one tape."
+        # Clamp container size to usable capacity so a single container always
+        # fits on one tape; if the caller specified a larger value, reduce silently.
+        effective_container_size = min(config.max_container_size_bytes, usable_capacity)
+        if effective_container_size != config.max_container_size_bytes:
+            logger.debug(
+                "max_container_size_bytes (%d) clamped to usable_capacity (%d)",
+                config.max_container_size_bytes,
+                usable_capacity,
             )
 
         # Pass 2 — pack source files sequentially into containers.
@@ -86,7 +89,7 @@ class BackupPlanner:
             seg_seq = 0
 
             while remaining > 0:
-                if current_container_id is None or container_fill >= config.max_container_size_bytes:
+                if current_container_id is None or container_fill >= effective_container_size:
                     if current_container_id is not None:
                         container_sizes[current_container_id] = container_fill
                     container_seq += 1
@@ -99,7 +102,7 @@ class BackupPlanner:
                         container_seq,
                     )
 
-                space_in_container = config.max_container_size_bytes - container_fill
+                space_in_container = effective_container_size - container_fill
                 chunk = min(remaining, space_in_container)
                 seg_seq += 1
                 segment_id = f"SEG-{source_file.file_id}-{seg_seq:03d}"

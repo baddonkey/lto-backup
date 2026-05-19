@@ -130,8 +130,8 @@ def _make_segment(tape_id: str, file_id: str = "file-001") -> TapeSegment:
     return TapeSegment(
         segment_id="seg-001",
         file_id=file_id,
-        tape_id=tape_id,
-        tape_offset=0,
+        container_id="CNT-001",
+        container_offset=0,
         source_offset=0,
         length_bytes=100,
         sha256="abc123",
@@ -143,6 +143,7 @@ def _make_config() -> BackupConfig:
         source_root=Path("/src"),
         tapes_root=Path("/tapes"),
         tape_nominal_capacity_bytes=1_000_000,
+        max_container_size_bytes=1_000_000,
     )
 
 

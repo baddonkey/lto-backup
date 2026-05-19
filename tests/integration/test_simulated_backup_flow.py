@@ -22,6 +22,7 @@ def _config(source: Path, tapes: Path, capacity: int = _TAPE_NOMINAL) -> BackupC
         source_root=source,
         tapes_root=tapes,
         tape_nominal_capacity_bytes=capacity,
+        max_container_size_bytes=capacity,  # clamped to usable_capacity by planner
     )
 
 
@@ -267,10 +268,10 @@ class TestSimulatedBackupFlow:
 
         catalog = build_backup_service(_config(source, tapes)).run(_config(source, tapes))
 
-        # Overwrite the first segment's data file on the virtual tape.
+        # Overwrite the first container's data file on the virtual tape.
         tape_id = catalog.tapes[0].tape_id
-        seg_id = catalog.segments[0].segment_id
-        (tapes / tape_id / "data" / seg_id).write_bytes(b"CORRUPTED DATA")
+        container_id = next(c.container_id for c in catalog.containers if c.tape_id == tape_id)
+        (tapes / tape_id / "data" / container_id).write_bytes(b"CORRUPTED DATA")
 
         errors = _verifier(tapes).verify(catalog)
 

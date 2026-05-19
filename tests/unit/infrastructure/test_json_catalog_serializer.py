@@ -29,8 +29,8 @@ def _make_catalog() -> Catalog:
     segment = TapeSegment(
         segment_id="SEG-001",
         file_id="FILE-001",
-        tape_id="TAPE-001",
-        tape_offset=0,
+        container_id="CNT-BSET-001-00001",
+        container_offset=0,
         source_offset=0,
         length_bytes=1_073_741_824,
         sha256="ghi789",
@@ -90,7 +90,7 @@ class TestJsonCatalogSerializer:
         restored = self.serializer.deserialize(data)
         assert len(restored.segments) == 1
         assert restored.segments[0].source_offset == 0
-        assert restored.segments[0].tape_offset == 0
+        assert restored.segments[0].container_offset == 0
 
     def test_datetime_round_trip_utc(self) -> None:
         catalog = _make_catalog()

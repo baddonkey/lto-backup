@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from lto_backup.domain.backup_plan import BackupPlan
+from lto_backup.domain.container import Container
 from lto_backup.domain.source_file import SourceFile
 from lto_backup.domain.tape import Tape
 from lto_backup.domain.tape_segment import TapeSegment
@@ -134,19 +135,35 @@ def _make_file(file_id: str, data: bytes) -> SourceFile:
     )
 
 
+def _make_container(
+    container_id: str,
+    tape_id: str,
+    size_bytes: int,
+    seq: int = 1,
+) -> Container:
+    return Container(
+        container_id=container_id,
+        backup_set_id="BS-1",
+        tape_id=tape_id,
+        sequence_number=seq,
+        tape_offset=0,
+        size_bytes=size_bytes,
+    )
+
+
 def _make_segment(
     seg_id: str,
     file_id: str,
-    tape_id: str,
+    container_id: str,
     data: bytes,
     source_offset: int = 0,
-    tape_offset: int = 0,
+    container_offset: int = 0,
 ) -> TapeSegment:
     return TapeSegment(
         segment_id=seg_id,
         file_id=file_id,
-        tape_id=tape_id,
-        tape_offset=tape_offset,
+        container_id=container_id,
+        container_offset=container_offset,
         source_offset=source_offset,
         length_bytes=len(data),
         sha256="",
@@ -172,11 +189,13 @@ class TestBackupWriter:
         data = b"hello backup"
         tape = _make_tape("TAPE-1")
         sf = _make_file("f1", data)
-        segment = _make_segment("SEG-f1-001", "f1", "TAPE-1", data)
+        segment = _make_segment("SEG-f1-001", "f1", "CNT-BS-1-00001", data)
+        container = _make_container("CNT-BS-1-00001", "TAPE-1", len(data))
         plan = BackupPlan(
             backup_set_id="BS-1",
             source_root="/src",
             tapes=[tape],
+            containers=[container],
             source_files=[sf],
             segments=[segment],
         )
@@ -184,7 +203,7 @@ class TestBackupWriter:
 
         self.writer.write(plan)
 
-        assert self.tape_drive.written["SEG-f1-001"] == data
+        assert self.tape_drive.written["CNT-BS-1-00001"] == data
 
     # Test 2a — split file: correct first chunk written to tape 1
     def test_split_file_first_chunk_written_to_tape_one(self) -> None:
@@ -194,12 +213,15 @@ class TestBackupWriter:
         sf = _make_file("f1", data)
         chunk1 = data[:100]
         chunk2 = data[100:]
-        seg1 = _make_segment("SEG-f1-001", "f1", "TAPE-1", chunk1, source_offset=0)
-        seg2 = _make_segment("SEG-f1-002", "f1", "TAPE-2", chunk2, source_offset=100)
+        seg1 = _make_segment("SEG-f1-001", "f1", "CNT-BS-1-00001", chunk1, source_offset=0)
+        seg2 = _make_segment("SEG-f1-002", "f1", "CNT-BS-1-00002", chunk2, source_offset=100)
+        cnt1 = _make_container("CNT-BS-1-00001", "TAPE-1", len(chunk1), seq=1)
+        cnt2 = _make_container("CNT-BS-1-00002", "TAPE-2", len(chunk2), seq=2)
         plan = BackupPlan(
             backup_set_id="BS-1",
             source_root="/src",
             tapes=[tape1, tape2],
+            containers=[cnt1, cnt2],
             source_files=[sf],
             segments=[seg1, seg2],
         )
@@ -207,7 +229,7 @@ class TestBackupWriter:
 
         self.writer.write(plan)
 
-        assert self.tape_drive.written["SEG-f1-001"] == chunk1
+        assert self.tape_drive.written["CNT-BS-1-00001"] == chunk1
 
     # Test 2b — split file: correct second chunk written to tape 2
     def test_split_file_second_chunk_written_to_tape_two(self) -> None:
@@ -217,12 +239,15 @@ class TestBackupWriter:
         sf = _make_file("f1", data)
         chunk1 = data[:100]
         chunk2 = data[100:]
-        seg1 = _make_segment("SEG-f1-001", "f1", "TAPE-1", chunk1, source_offset=0)
-        seg2 = _make_segment("SEG-f1-002", "f1", "TAPE-2", chunk2, source_offset=100)
+        seg1 = _make_segment("SEG-f1-001", "f1", "CNT-BS-1-00001", chunk1, source_offset=0)
+        seg2 = _make_segment("SEG-f1-002", "f1", "CNT-BS-1-00002", chunk2, source_offset=100)
+        cnt1 = _make_container("CNT-BS-1-00001", "TAPE-1", len(chunk1), seq=1)
+        cnt2 = _make_container("CNT-BS-1-00002", "TAPE-2", len(chunk2), seq=2)
         plan = BackupPlan(
             backup_set_id="BS-1",
             source_root="/src",
             tapes=[tape1, tape2],
+            containers=[cnt1, cnt2],
             source_files=[sf],
             segments=[seg1, seg2],
         )
@@ -230,7 +255,7 @@ class TestBackupWriter:
 
         self.writer.write(plan)
 
-        assert self.tape_drive.written["SEG-f1-002"] == chunk2
+        assert self.tape_drive.written["CNT-BS-1-00002"] == chunk2
 
     # Test 3 — file changed since scanning raises SourceFileChangedError
     def test_sha256_mismatch_raises_source_file_changed_error(self) -> None:
@@ -239,11 +264,13 @@ class TestBackupWriter:
         tape = _make_tape("TAPE-1")
         # source_file records the sha256 of original_data.
         sf = _make_file("f1", original_data)
-        segment = _make_segment("SEG-f1-001", "f1", "TAPE-1", original_data)
+        segment = _make_segment("SEG-f1-001", "f1", "CNT-BS-1-00001", original_data)
+        container = _make_container("CNT-BS-1-00001", "TAPE-1", len(original_data))
         plan = BackupPlan(
             backup_set_id="BS-1",
             source_root="/src",
             tapes=[tape],
+            containers=[container],
             source_files=[sf],
             segments=[segment],
         )
@@ -258,16 +285,18 @@ class TestBackupWriter:
         data = b"lots of data"
         tape = _make_tape("TAPE-1")
         sf = _make_file("f1", data)
-        segment = _make_segment("SEG-f1-001", "f1", "TAPE-1", data)
+        segment = _make_segment("SEG-f1-001", "f1", "CNT-BS-1-00001", data)
+        container = _make_container("CNT-BS-1-00001", "TAPE-1", len(data))
         plan = BackupPlan(
             backup_set_id="BS-1",
             source_root="/src",
             tapes=[tape],
+            containers=[container],
             source_files=[sf],
             segments=[segment],
         )
         self.file_system.register(Path("/src/path/f1"), data)
-        self.tape_drive.raise_tape_full_on("SEG-f1-001")
+        self.tape_drive.raise_tape_full_on("CNT-BS-1-00001")
 
         with pytest.raises(FileWriteError) as exc_info:
             self.writer.write(plan)
@@ -282,12 +311,15 @@ class TestBackupWriter:
         tape2 = _make_tape("TAPE-2", seq=2)
         sf1 = _make_file("f1", data1)
         sf2 = _make_file("f2", data2)
-        seg1 = _make_segment("SEG-f1-001", "f1", "TAPE-1", data1)
-        seg2 = _make_segment("SEG-f2-001", "f2", "TAPE-2", data2)
+        seg1 = _make_segment("SEG-f1-001", "f1", "CNT-BS-1-00001", data1)
+        seg2 = _make_segment("SEG-f2-001", "f2", "CNT-BS-1-00002", data2)
+        cnt1 = _make_container("CNT-BS-1-00001", "TAPE-1", len(data1), seq=1)
+        cnt2 = _make_container("CNT-BS-1-00002", "TAPE-2", len(data2), seq=2)
         plan = BackupPlan(
             backup_set_id="BS-1",
             source_root="/src",
             tapes=[tape1, tape2],
+            containers=[cnt1, cnt2],
             source_files=[sf1, sf2],
             segments=[seg1, seg2],
         )
@@ -306,12 +338,14 @@ class TestBackupWriter:
         tape = _make_tape("TAPE-1")
         sf = _make_file("f1", original_data)
         segment = _make_segment(
-            "SEG-f1-001", "f1", "TAPE-1", original_data
+            "SEG-f1-001", "f1", "CNT-BS-1-00001", original_data
         )
+        container = _make_container("CNT-BS-1-00001", "TAPE-1", len(original_data))
         plan = BackupPlan(
             backup_set_id="BS-1",
             source_root="/src",
             tapes=[tape],
+            containers=[container],
             source_files=[sf],
             segments=[segment],
         )
@@ -342,12 +376,15 @@ class TestBackupWriter:
         sf = _make_file("f1", data)
         chunk1 = data[:100]
         chunk2 = data[100:]
-        seg1 = _make_segment("SEG-f1-001", "f1", "TAPE-1", chunk1, source_offset=0)
-        seg2 = _make_segment("SEG-f1-002", "f1", "TAPE-2", chunk2, source_offset=100)
+        seg1 = _make_segment("SEG-f1-001", "f1", "CNT-BS-1-00001", chunk1, source_offset=0)
+        seg2 = _make_segment("SEG-f1-002", "f1", "CNT-BS-1-00002", chunk2, source_offset=100)
+        cnt1 = _make_container("CNT-BS-1-00001", "TAPE-1", len(chunk1), seq=1)
+        cnt2 = _make_container("CNT-BS-1-00002", "TAPE-2", len(chunk2), seq=2)
         plan = BackupPlan(
             backup_set_id="BS-1",
             source_root="/src",
             tapes=[tape1, tape2],
+            containers=[cnt1, cnt2],
             source_files=[sf],
             segments=[seg1, seg2],
         )
@@ -366,11 +403,13 @@ class TestBackupWriter:
         data = b"data"
         tape = _make_tape("TAPE-1")
         sf = _make_file("f1", data)
-        segment = _make_segment("SEG-f1-001", "f1", "TAPE-1", data)
+        segment = _make_segment("SEG-f1-001", "f1", "CNT-BS-1-00001", data)
+        container = _make_container("CNT-BS-1-00001", "TAPE-1", len(data))
         plan = BackupPlan(
             backup_set_id="BS-1",
             source_root="/src",
             tapes=[tape],
+            containers=[container],
             source_files=[sf],
             segments=[segment],
         )

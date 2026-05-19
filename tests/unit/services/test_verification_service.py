@@ -5,6 +5,7 @@ from datetime import datetime
 from pathlib import Path
 
 from lto_backup.domain.catalog import Catalog
+from lto_backup.domain.container import Container
 from lto_backup.domain.tape import Tape
 from lto_backup.domain.tape_segment import TapeSegment
 from lto_backup.services.verification_service import VerificationService
@@ -97,12 +98,23 @@ def _make_tape(tape_id: str) -> Tape:
     )
 
 
-def _make_segment(segment_id: str, tape_id: str, data: bytes) -> TapeSegment:
+def _make_container(container_id: str, tape_id: str) -> Container:
+    return Container(
+        container_id=container_id,
+        backup_set_id=_BACKUP_SET_ID,
+        tape_id=tape_id,
+        sequence_number=1,
+        tape_offset=0,
+        size_bytes=100,
+    )
+
+
+def _make_segment(segment_id: str, container_id: str, data: bytes) -> TapeSegment:
     return TapeSegment(
         segment_id=segment_id,
         file_id="f1",
-        tape_id=tape_id,
-        tape_offset=0,
+        container_id=container_id,
+        container_offset=0,
         source_offset=0,
         length_bytes=len(data),
         sha256=hashlib.sha256(data).hexdigest(),
@@ -111,7 +123,7 @@ def _make_segment(segment_id: str, tape_id: str, data: bytes) -> TapeSegment:
 
 def _tape_data(
     catalog_bytes: bytes,
-    segments: list[tuple[str, bytes]],
+    containers: list[tuple[str, bytes]],
     corrupt_catalog_sha256: bool = False,
 ) -> dict[str, bytes]:
     """Build the file dictionary for a single in-memory tape."""
@@ -122,8 +134,8 @@ def _tape_data(
         "catalog/catalog.json": catalog_bytes,
         "catalog/catalog.sha256": sha256_hex.encode(),
     }
-    for seg_id, seg_bytes in segments:
-        result[seg_id] = seg_bytes
+    for container_id, container_bytes in containers:
+        result[container_id] = container_bytes
     return result
 
 
@@ -144,8 +156,9 @@ def _make_service(
 class TestVerifyAllMatch:
     def setup_method(self) -> None:
         seg_data = b"segment payload"
-        segment = _make_segment("seg-001", _T1, seg_data)
-        td = _tape_data(b"catalog json", [("seg-001", seg_data)])
+        container = _make_container("CNT-001", _T1)
+        segment = _make_segment("seg-001", "CNT-001", seg_data)
+        td = _tape_data(b"catalog json", [("CNT-001", seg_data)])
         svc, _ = _make_service({_T1: td})
         catalog = Catalog(
             schema_version="1.0",
@@ -153,6 +166,7 @@ class TestVerifyAllMatch:
             created_at=_CREATED_AT,
             source_root="/src",
             tapes=[_make_tape(_T1)],
+            containers=[container],
             segments=[segment],
         )
         self.errors = svc.verify(catalog)
@@ -165,9 +179,10 @@ class TestVerifySegmentChecksumMismatch:
     def setup_method(self) -> None:
         seg_data = b"segment payload"
         corrupt_data = b"corrupted"
-        segment = _make_segment("seg-002", _T1, seg_data)
-        # tape stores corrupt bytes for that segment
-        td = _tape_data(b"catalog json", [("seg-002", corrupt_data)])
+        container = _make_container("CNT-001", _T1)
+        segment = _make_segment("seg-002", "CNT-001", seg_data)
+        # tape stores corrupt bytes for that container
+        td = _tape_data(b"catalog json", [("CNT-001", corrupt_data)])
         svc, _ = _make_service({_T1: td})
         catalog = Catalog(
             schema_version="1.0",
@@ -175,6 +190,7 @@ class TestVerifySegmentChecksumMismatch:
             created_at=_CREATED_AT,
             source_root="/src",
             tapes=[_make_tape(_T1)],
+            containers=[container],
             segments=[segment],
         )
         self.errors = svc.verify(catalog)

@@ -106,8 +106,8 @@ def _make_plan(
     segment = TapeSegment(
         segment_id="seg-1",
         file_id="f1",
-        tape_id="TAPE-001",
-        tape_offset=0,
+        container_id="CNT-001",
+        container_offset=0,
         source_offset=0,
         length_bytes=1024,
         sha256="abc123",
@@ -188,7 +188,7 @@ class TestBuildCatalog:
         service, _, _ = _make_service()
         plan = _make_plan()
         catalog = service.build_catalog(plan, {})
-        assert catalog.schema_version == "1.0"
+        assert catalog.schema_version == "2.0"
 
 
 class TestWriteCatalogToTape:

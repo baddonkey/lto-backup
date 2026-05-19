@@ -69,6 +69,7 @@ class TestBackupPlanner:
             source_root=Path("/src"),
             tapes_root=Path("/tapes"),
             tape_nominal_capacity_bytes=1000,
+            max_container_size_bytes=1000,  # clamped to usable (900) by planner
         )
 
     # SPEC planner test requirement #1
@@ -94,21 +95,22 @@ class TestBackupPlanner:
         assert len(plan.tapes) == 3
         assert len(plan.segments) == 3
 
-    # SPEC planner test requirement #4 — tape_offset tracking on split file
-    def test_single_large_file_tape_offset_tracking(self) -> None:
+    # SPEC planner test requirement #4 — container_offset tracking on split file
+    def test_single_large_file_container_offset_tracking(self) -> None:
+        # usable=900 → effective_container_size=900; each segment fills its own container
         files = [_make_file("f1", 2000)]
         plan = self.planner.plan(files, self.config)
         seg0, seg1, seg2 = plan.segments
 
-        assert seg0.tape_offset == 0
+        assert seg0.container_offset == 0
         assert seg0.source_offset == 0
         assert seg0.length_bytes == 900
 
-        assert seg1.tape_offset == 0
+        assert seg1.container_offset == 0
         assert seg1.source_offset == 900
         assert seg1.length_bytes == 900
 
-        assert seg2.tape_offset == 0
+        assert seg2.container_offset == 0
         assert seg2.source_offset == 1800
         assert seg2.length_bytes == 200
 
@@ -126,6 +128,7 @@ class TestBackupPlanner:
             source_root=Path("/src"),
             tapes_root=Path("/tapes"),
             tape_nominal_capacity_bytes=0,
+            max_container_size_bytes=1000,
         )
         with pytest.raises(BackupPlanError):
             self.planner.plan([], config)
@@ -135,6 +138,7 @@ class TestBackupPlanner:
             source_root=Path("/src"),
             tapes_root=Path("/tapes"),
             tape_nominal_capacity_bytes=-1,
+            max_container_size_bytes=1000,
         )
         with pytest.raises(BackupPlanError):
             self.planner.plan([], config)
@@ -146,14 +150,15 @@ class TestBackupPlanner:
         with pytest.raises(BackupPlanError):
             planner.plan([_make_file("f1", 100)], self.config)
 
-    # Additional: tape_offset is correct for consecutive segments on the same tape
-    def test_tape_offset_consecutive_segments_same_tape(self) -> None:
+    # Additional: container_offset is correct for consecutive segments in the same container
+    def test_container_offset_consecutive_segments_same_container(self) -> None:
         files = [_make_file("f1", 300), _make_file("f2", 200)]
         plan = self.planner.plan(files, self.config)
         assert len(plan.tapes) == 1
-        assert plan.segments[0].tape_offset == 0
+        assert len(plan.containers) == 1
+        assert plan.segments[0].container_offset == 0
         assert plan.segments[0].length_bytes == 300
-        assert plan.segments[1].tape_offset == 300
+        assert plan.segments[1].container_offset == 300
         assert plan.segments[1].length_bytes == 200
 
     def test_plan_returns_correct_backup_set_id_and_source_root(self) -> None:
