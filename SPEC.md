@@ -50,11 +50,11 @@ Every segment is recorded in the catalog with its container ID and byte offset w
 usable_capacity = nominal_capacity - reserved_catalog_bytes
 ```
 
-`reserved_catalog_bytes` is **not** a user-facing parameter. The planner computes it automatically using a three-pass approach:
+`reserved_catalog_bytes` is **not** a user-facing parameter. The planner computes it automatically using an iterative packing approach:
 
-1. **Draft catalog** — build a catalog containing only the source file list (no containers or segments yet) and serialize it to measure its baseline size. That size becomes `reserved_catalog_bytes` for every tape.
-2. **Pack containers** — distribute source files and file-slices into containers of at most `max_container_size_bytes`, then assign containers to tapes respecting `usable_capacity`.
-3. **Finalize** — assemble the full plan with all containers and segments.
+1. **Draft estimate** — build a catalog with only the source file list and serialize it to get an initial lower bound for `reserved_catalog_bytes`. Add 64 bytes for the companion `catalog.sha256` file. Compute `usable_capacity = nominal_capacity - reserved_catalog_bytes`.
+2. **Pack** — distribute source files and file-slices into containers of at most `max_container_size_bytes`, then assign containers to tapes respecting `usable_capacity`. Segment SHA-256 fields use a 64-character placeholder so the estimated size matches the final serialized size.
+3. **Measure and re-pack** — serialize the full catalog (tapes + containers + segments + source files) and measure its size plus the 64-byte checksum file. If this size exceeds the current `reserved_catalog_bytes`, update the reserve and repeat from step 2. Repeat until stable (typically converges in ≤2 iterations).
 
 ---
 
@@ -109,12 +109,13 @@ All planned work is complete.
 
 ## Backup Pipeline
 
-Each backup run executes four stages:
+Each backup run executes five stages:
 
 1. **Scan** — `SourceScanner` walks `source_root`, computes SHA-256 for every file, records size and `modified_at`.
-2. **Plan** — `BackupPlanner` uses the three-pass algorithm to compute `reserved_catalog_bytes`, then packs source files into containers (≤ `max_container_size_bytes` each) and assigns containers to tapes. Files larger than one container are split across container boundaries. `TapeSegment.sha256` is set to `""` at planning time.
-3. **Write** — `BackupWriter` iterates tapes and containers in order. For each container it collects all its segments, reads the corresponding file slices from disk, verifies the full-file SHA-256 against the scanned value (raises `SourceFileChangedError` if not), concatenates the slices, writes the container as a single blob to tape, and records per-segment SHA-256s. Returns a `dict[segment_id, sha256]`.
-4. **Catalog** — `CatalogService` fills segment SHA-256s via `dataclasses.replace`, serializes the catalog to JSON, and writes `catalog/catalog.json` + `catalog/catalog.sha256` to every tape.
+2. **Plan** — `BackupPlanner` uses the iterative packing algorithm to compute `reserved_catalog_bytes`, then packs source files into containers (≤ `max_container_size_bytes` each) and assigns containers to tapes. Files larger than one container are split across container boundaries. Segment `sha256` fields hold 64-char placeholders at planning time.
+3. **Hash** — `BackupWriter.compute_sha256s()` reads every source file, verifies the full-file SHA-256 against the scanned value (`SourceFileChangedError` if modified), and returns a `dict[segment_id, sha256]` of per-segment hashes. No tape I/O occurs.
+4. **Write** — `BackupWriter.write()` accepts a `post_tape_callback: Callable[[TapeDrive], None]`. For each tape it loads the tape, writes all containers (reading and verifying source files), then calls `post_tape_callback` with the still-loaded tape drive before unloading. Each physical tape is handled exactly once.
+5. **Catalog** — `BackupService` passes `catalog_service.write_catalog_to_tape` as the callback. `CatalogService.build_catalog()` fills segment SHA-256s from step 3 via `dataclasses.replace`, serializes to JSON, and writes `catalog/catalog.json` + `catalog/catalog.sha256` to every tape during its single load in step 4.
 
 ---
 
@@ -179,9 +180,8 @@ Required system tools: `ltfs`, `umount`, `mt` (on `$PATH`). Tape must be pre-for
 1. All files fit in one container on one tape.
 2. Multiple files fill multiple containers across multiple tapes.
 3. A single large file splits across container boundaries (and tape boundaries).
-4. Computed catalog reserve (three-pass) reduces usable capacity.
-5. `max_container_size_bytes` exceeding usable capacity raises `BackupPlanError`.
-6. Invalid capacity raises `BackupPlanError`.
+4. Computed catalog reserve (iterative) reduces usable capacity and accounts for the 64-byte checksum file.
+5. Invalid capacity raises `BackupPlanError`.
 
 ## Simulator Test Requirements (reference)
 

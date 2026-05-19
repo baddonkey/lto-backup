@@ -21,15 +21,18 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -e '.[dev]'
 
-pytest   # 107 tests
-mypy     # strict, 0 issues
+pytest   # 114 tests
+mypy src/ --strict   # 0 issues
 ```
 
 ## Usage
 
 ### Simulator (development / testing)
 
-The simulator stores virtual tapes as plain directories on disk.
+The simulator stores virtual tapes as plain directories on disk — no hardware
+required.
+
+**CLI:**
 
 ```bash
 lto-backup \
@@ -37,6 +40,67 @@ lto-backup \
   --simulator /path/to/tape-store \
   --capacity-tb 18 \
   --container-size-gb 100
+```
+
+**Python API:**
+
+```python
+from pathlib import Path
+from lto_backup.config.backup_config import BackupConfig
+from lto_backup.infrastructure.catalog.json_catalog_serializer import JsonCatalogSerializer
+from lto_backup.infrastructure.filesystem.sha256_file_hasher import Sha256FileHasher
+from lto_backup.infrastructure.simulator.simulator_tape_drive import SimulatorTapeDrive
+from lto_backup.services.verification_service import VerificationService
+from lto_backup.wiring.container import build_backup_service
+
+source = Path("/path/to/records")
+tapes  = Path("/path/to/tape-store")
+tapes.mkdir(parents=True, exist_ok=True)
+
+config = BackupConfig(
+    source_root=source,
+    tapes_root=tapes,
+    tape_nominal_capacity_bytes=18 * 1_000_000_000_000,   # 18 TB (LTO-9)
+    max_container_size_bytes=100 * 1_000_000_000,         # 100 GB containers
+)
+
+# --- backup ---
+catalog = build_backup_service(config).run(config)
+print(f"Backup complete: {len(catalog.tapes)} tape(s), {len(catalog.source_files)} file(s)")
+
+# --- verify ---
+verifier = VerificationService(
+    SimulatorTapeDrive(tapes, config.tape_nominal_capacity_bytes),
+    JsonCatalogSerializer(),
+    Sha256FileHasher(),
+)
+errors = verifier.verify(catalog)
+if errors:
+    for e in errors:
+        print("CORRUPT:", e)
+else:
+    print("All tapes verified clean.")
+```
+
+**On-disk layout after a two-tape backup:**
+
+```
+/path/to/tape-store/
+  TAPE-<uuid>-001/
+    data/
+      CNT-<uuid>-00001       ← container blobs (raw bytes)
+      CNT-<uuid>-00002
+    catalog/
+      catalog.json           ← full catalog for the entire backup set
+      catalog.sha256         ← SHA-256 of catalog.json
+    tape.json                ← simulator metadata (capacity tracking)
+  TAPE-<uuid>-002/
+    data/
+      CNT-<uuid>-00003
+    catalog/
+      catalog.json
+      catalog.sha256
+    tape.json
 ```
 
 ### Real LTO Hardware (Linux, LTFS)
@@ -82,9 +146,10 @@ Backup complete. 2 tape(s), 1438 file(s).
 Each run executes four stages in sequence:
 
 1. **Scan** — `SourceScanner` walks the source directory, hashes every file with SHA-256, and records size and modification time.
-2. **Plan** — `BackupPlanner` (three-pass) measures the catalog size to compute `reserved_catalog_bytes`, then packs source files into containers of at most `--container-size-gb`. Files larger than one container are split. Containers are assigned to tapes until each tape is full, then a new tape is started.
-3. **Write** — `BackupWriter` iterates tapes and containers in sequence. For each container it reads all required file slices from disk, verifies the full-file SHA-256 against the scanned value (`SourceFileChangedError` if modified), concatenates the slices into a single container blob, writes it to tape as one file, and records per-segment SHA-256s.
-4. **Catalog** — `CatalogService` fills segment SHA-256s, serializes to JSON, and writes `catalog/catalog.json` + `catalog/catalog.sha256` to every tape.
+2. **Plan** — `BackupPlanner` iterates packing until the serialized catalog size (including all tape, container, and segment entries with 64-char SHA-256 placeholders, plus the 64-byte checksum file) fits within `reserved_catalog_bytes`. This guarantees enough space is reserved on every tape before data is written.
+3. **Hash** — `BackupWriter.compute_sha256s()` reads every source file and pre-computes the SHA-256 of each planned segment. No tape I/O occurs at this stage.
+4. **Write** — `BackupWriter.write()` iterates tapes in sequence. For each tape it loads the tape, writes all containers (reading and verifying source files against their scanned SHA-256 — `SourceFileChangedError` if modified), then writes the full catalog to the tape before unloading it. Each physical tape is loaded exactly once.
+5. **Catalog** — `CatalogService` assembles the `Catalog` object (filling in the pre-computed segment SHA-256s) and serializes it to `catalog/catalog.json` + `catalog/catalog.sha256`. The catalog is written to each tape immediately before that tape is ejected.
 
 ## Tape Switching (multi-tape backups)
 
@@ -115,9 +180,9 @@ The catalog is written to every tape as `catalog/catalog.json` (with a companion
 | `backup_set_id` | UUID identifying this backup set |
 | `created_at` | ISO-8601 timestamp of backup creation |
 | `source_root` | Absolute path of the source directory |
-| `tapes` | List of tape objects (`tape_id`, `label`, `sequence_number`) |
+| `tapes` | List of tape objects (`tape_id`, `backup_set_id`, `sequence_number`, `nominal_capacity_bytes`, `reserved_catalog_bytes`) |
 | `containers` | List of containers (`container_id`, `backup_set_id`, `tape_id`, `sequence_number`, `tape_offset`, `size_bytes`) |
-| `source_files` | List of source files (`file_id`, `path`, `size_bytes`, `sha256`, `modified_at`) |
+| `source_files` | List of source files (`file_id`, `relative_path`, `absolute_path`, `size_bytes`, `sha256`, `modified_at`) |
 | `segments` | List of tape segments (`segment_id`, `file_id`, `container_id`, `container_offset`, `source_offset`, `length_bytes`, `sha256`) |
 
 Each segment's `sha256` is the hash of that slice of bytes within the container. Full-file hashes are stored on the `source_files` entries.
