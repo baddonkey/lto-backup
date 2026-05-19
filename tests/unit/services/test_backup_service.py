@@ -47,13 +47,26 @@ class FakePlanner:
 class FakeWriter:
     def __init__(self) -> None:
         self.written_plan: BackupPlan | None = None
+        self.sha256s_plan: BackupPlan | None = None
         self.raise_on_write: Exception | None = None
 
-    def write(self, plan: BackupPlan) -> dict[str, str]:
+    def compute_sha256s(self, plan: BackupPlan) -> dict[str, str]:
+        self.sha256s_plan = plan
+        return {}
+
+    def write(
+        self,
+        plan: BackupPlan,
+        post_tape_callback: object = None,
+    ) -> None:
         if self.raise_on_write is not None:
             raise self.raise_on_write
         self.written_plan = plan
-        return {}
+        # Simulate per-tape callback — mirrors real BackupWriter behaviour.
+        if post_tape_callback is not None:
+            cb = post_tape_callback
+            for _ in plan.tapes:
+                cb(None)  # type: ignore[operator]
 
 
 class FakeCatalogService:
@@ -68,36 +81,6 @@ class FakeCatalogService:
 
     def write_catalog_to_tape(self, catalog: Catalog, tape_drive: object) -> None:
         self.write_calls += 1
-
-
-class FakeTapeDrive:
-    def __init__(self) -> None:
-        self.load_calls: list[str] = []
-        self.unload_calls: int = 0
-
-    def load_tape(self, tape_id: str) -> None:
-        self.load_calls.append(tape_id)
-
-    def unload_tape(self) -> None:
-        self.unload_calls += 1
-
-    def current_tape_id(self) -> str:
-        return self.load_calls[-1] if self.load_calls else ""
-
-    def remaining_capacity_bytes(self) -> int:
-        return 2**40
-
-    def write_file(self, source_path: Path, destination_name: str) -> None:
-        raise NotImplementedError
-
-    def write_bytes(self, destination_name: str, data: bytes) -> None:
-        pass
-
-    def read_file(self, name: str) -> bytes:
-        return b""
-
-    def list_files(self) -> list[str]:
-        return []
 
 
 # ---------------------------------------------------------------------------
@@ -178,13 +161,11 @@ class TestBackupService:
         self._planner = FakePlanner(plan=self._plan)
         self._writer = FakeWriter()
         self._catalog_service = FakeCatalogService(catalog=self._catalog)
-        self._tape_drive = FakeTapeDrive()
         self._service = BackupService(  # type: ignore[arg-type]
             scanner=self._scanner,  # type: ignore[arg-type]
             planner=self._planner,  # type: ignore[arg-type]
             writer=self._writer,  # type: ignore[arg-type]
             catalog_service=self._catalog_service,  # type: ignore[arg-type]
-            tape_drive=self._tape_drive,
         )
 
     def test_run_returns_catalog_from_catalog_service(self) -> None:
@@ -213,11 +194,10 @@ class TestBackupService:
 
         assert self._catalog_service.write_calls == 2
 
-    def test_run_loads_and_unloads_each_tape_for_catalog(self) -> None:
+    def test_run_calls_compute_sha256s_with_plan(self) -> None:
         self._service.run(_make_config())
 
-        assert self._tape_drive.load_calls == ["TAPE-001", "TAPE-002"]
-        assert self._tape_drive.unload_calls == 2
+        assert self._writer.sha256s_plan is self._plan
 
     def test_run_propagates_backup_error_from_writer(self) -> None:
         self._writer.raise_on_write = FileWriteError("simulated tape full")

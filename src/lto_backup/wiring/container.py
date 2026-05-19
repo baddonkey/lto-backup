@@ -40,7 +40,7 @@ def _build_backup_service_with_drive(config: BackupConfig, tape_drive: TapeDrive
     writer = BackupWriter(tape_drive, file_system, file_hasher)
     catalog_service = CatalogService(serializer, clock)
 
-    return BackupService(scanner, planner, writer, catalog_service, tape_drive)
+    return BackupService(scanner, planner, writer, catalog_service)
 
 
 def build_backup_service(config: BackupConfig) -> BackupService:

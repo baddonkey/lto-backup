@@ -61,7 +61,8 @@ class TestBackupPlanner:
     """Tests for BackupPlanner.plan()."""
 
     def setup_method(self) -> None:
-        # Fake serializer returns 100 bytes → usable_capacity = 1000 - 100 = 900
+        # Fake serializer returns 100 bytes → reserved = 100 + 64 (checksum) = 164
+        # usable_capacity = 1000 - 164 = 836
         self.serializer = FakeCatalogSerializer(size=100)
         self.clock = FakeClock()
         self.planner = BackupPlanner(self.serializer, self.clock)
@@ -69,7 +70,7 @@ class TestBackupPlanner:
             source_root=Path("/src"),
             tapes_root=Path("/tapes"),
             tape_nominal_capacity_bytes=1000,
-            max_container_size_bytes=1000,  # clamped to usable (900) by planner
+            max_container_size_bytes=1000,  # clamped to usable (836) by planner
         )
 
     # SPEC planner test requirement #1
@@ -81,7 +82,7 @@ class TestBackupPlanner:
 
     # SPEC planner test requirement #2
     def test_multiple_files_span_multiple_tapes(self) -> None:
-        # usable=900; f1=800 fits, leaves 100; f2=800 → 100 on tape1, 700 on tape2
+        # usable=836; f1=800 fits, leaves 36; f2=800 → 36 on tape1, 764 on tape2
         files = [_make_file("f1", 800), _make_file("f2", 800)]
         plan = self.planner.plan(files, self.config)
         assert len(plan.tapes) == 2
@@ -89,30 +90,31 @@ class TestBackupPlanner:
 
     # SPEC planner test requirement #3
     def test_single_large_file_splits_across_tapes(self) -> None:
-        # 2000 bytes, usable=900 → 900+900+200 on 3 tapes
+        # 2000 bytes, usable=836 → 836+836+328 across 3 tapes
         files = [_make_file("f1", 2000)]
         plan = self.planner.plan(files, self.config)
         assert len(plan.tapes) == 3
         assert len(plan.segments) == 3
+        assert len(plan.segments) == 3
 
     # SPEC planner test requirement #4 — container_offset tracking on split file
     def test_single_large_file_container_offset_tracking(self) -> None:
-        # usable=900 → effective_container_size=900; each segment fills its own container
+        # usable=836 → effective_container_size=836; each segment fills its own container
         files = [_make_file("f1", 2000)]
         plan = self.planner.plan(files, self.config)
         seg0, seg1, seg2 = plan.segments
 
         assert seg0.container_offset == 0
         assert seg0.source_offset == 0
-        assert seg0.length_bytes == 900
+        assert seg0.length_bytes == 836
 
         assert seg1.container_offset == 0
-        assert seg1.source_offset == 900
-        assert seg1.length_bytes == 900
+        assert seg1.source_offset == 836
+        assert seg1.length_bytes == 836
 
         assert seg2.container_offset == 0
-        assert seg2.source_offset == 1800
-        assert seg2.length_bytes == 200
+        assert seg2.source_offset == 1672
+        assert seg2.length_bytes == 328
 
     # SPEC planner test requirement #5 — two-pass catalog reserve
     def test_catalog_reserve_reduces_usable_capacity(self) -> None:
@@ -120,7 +122,9 @@ class TestBackupPlanner:
         plan = self.planner.plan(files, self.config)
         assert len(plan.tapes) == 1
         assert plan.tapes[0].reserved_catalog_bytes > 0
-        assert plan.tapes[0].reserved_catalog_bytes == 100
+        # FakeCatalogSerializer returns 100 bytes; planner adds 64 bytes for the
+        # SHA-256 checksum file → total reserve = 164.
+        assert plan.tapes[0].reserved_catalog_bytes == 164
 
     # SPEC planner test requirement #6 — invalid capacity
     def test_invalid_capacity_zero_raises_backup_plan_error(self) -> None:

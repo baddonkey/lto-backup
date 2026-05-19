@@ -357,46 +357,115 @@ class TestBackupWriter:
 
         assert self.tape_drive.unload_calls == 1
 
-    # Test 6 — empty plan writes nothing and returns empty dict
+    # Test 6 — empty plan writes nothing
     def test_empty_plan_writes_nothing(self) -> None:
         plan = BackupPlan(backup_set_id="BS-1", source_root="/src")
 
-        result = self.writer.write(plan)
+        self.writer.write(plan)
 
-        assert result == {}
         assert self.tape_drive.load_calls == []
         assert self.tape_drive.unload_calls == 0
         assert self.tape_drive.written == {}
 
-    # Test 7 — write returns dict mapping segment_id to slice sha256
-    def test_write_returns_segment_sha256_map(self) -> None:
-        data = b"A" * 100 + b"B" * 100
+    # Test 7 — post_tape_callback is called once per tape, before unload
+    def test_post_tape_callback_called_once_per_tape(self) -> None:
+        data1 = b"tape one"
+        data2 = b"tape two"
         tape1 = _make_tape("TAPE-1", seq=1)
         tape2 = _make_tape("TAPE-2", seq=2)
-        sf = _make_file("f1", data)
-        chunk1 = data[:100]
-        chunk2 = data[100:]
-        seg1 = _make_segment("SEG-f1-001", "f1", "CNT-BS-1-00001", chunk1, source_offset=0)
-        seg2 = _make_segment("SEG-f1-002", "f1", "CNT-BS-1-00002", chunk2, source_offset=100)
-        cnt1 = _make_container("CNT-BS-1-00001", "TAPE-1", len(chunk1), seq=1)
-        cnt2 = _make_container("CNT-BS-1-00002", "TAPE-2", len(chunk2), seq=2)
+        sf1 = _make_file("f1", data1)
+        sf2 = _make_file("f2", data2)
+        seg1 = _make_segment("SEG-f1-001", "f1", "CNT-BS-1-00001", data1)
+        seg2 = _make_segment("SEG-f2-001", "f2", "CNT-BS-1-00002", data2)
+        cnt1 = _make_container("CNT-BS-1-00001", "TAPE-1", len(data1), seq=1)
+        cnt2 = _make_container("CNT-BS-1-00002", "TAPE-2", len(data2), seq=2)
         plan = BackupPlan(
             backup_set_id="BS-1",
             source_root="/src",
             tapes=[tape1, tape2],
             containers=[cnt1, cnt2],
-            source_files=[sf],
+            source_files=[sf1, sf2],
             segments=[seg1, seg2],
         )
+        self.file_system.register(Path("/src/path/f1"), data1)
+        self.file_system.register(Path("/src/path/f2"), data2)
+        callback_calls: list[object] = []
+
+        self.writer.write(plan, post_tape_callback=lambda td: callback_calls.append(td))
+
+        assert len(callback_calls) == 2
+
+    # Test 8 — post_tape_callback receives the tape drive (so catalog can be written)
+    def test_post_tape_callback_receives_tape_drive(self) -> None:
+        data = b"data"
+        tape = _make_tape("TAPE-1")
+        sf = _make_file("f1", data)
+        seg = _make_segment("SEG-f1-001", "f1", "CNT-BS-1-00001", data)
+        cnt = _make_container("CNT-BS-1-00001", "TAPE-1", len(data))
+        plan = BackupPlan(
+            backup_set_id="BS-1",
+            source_root="/src",
+            tapes=[tape],
+            containers=[cnt],
+            source_files=[sf],
+            segments=[seg],
+        )
         self.file_system.register(Path("/src/path/f1"), data)
+        received: list[object] = []
 
-        result = self.writer.write(plan)
+        self.writer.write(plan, post_tape_callback=lambda td: received.append(td))
 
-        assert result["SEG-f1-001"] == _sha256(chunk1)
-        assert result["SEG-f1-002"] == _sha256(chunk2)
-        # Slice sha256s differ from each other and from the full-file sha256.
-        assert result["SEG-f1-001"] != result["SEG-f1-002"]
-        assert result["SEG-f1-001"] != _sha256(data)
+        assert received[0] is self.tape_drive
+
+    # Test 9 — post_tape_callback is called before unload (tape still loaded)
+    def test_post_tape_callback_called_before_unload(self) -> None:
+        data = b"data"
+        tape = _make_tape("TAPE-1")
+        sf = _make_file("f1", data)
+        seg = _make_segment("SEG-f1-001", "f1", "CNT-BS-1-00001", data)
+        cnt = _make_container("CNT-BS-1-00001", "TAPE-1", len(data))
+        plan = BackupPlan(
+            backup_set_id="BS-1",
+            source_root="/src",
+            tapes=[tape],
+            containers=[cnt],
+            source_files=[sf],
+            segments=[seg],
+        )
+        self.file_system.register(Path("/src/path/f1"), data)
+        tape_loaded_during_callback: list[bool] = []
+
+        def _callback(td: FakeTapeDrive) -> None:  # type: ignore[override]
+            tape_loaded_during_callback.append(td.loaded_tape_id is not None)
+
+        self.writer.write(plan, post_tape_callback=_callback)
+
+        assert tape_loaded_during_callback == [True]
+        assert self.tape_drive.unload_calls == 1
+
+    # Test 10 — post_tape_callback not called when container write fails
+    def test_post_tape_callback_not_called_when_write_raises(self) -> None:
+        data = b"data"
+        tape = _make_tape("TAPE-1")
+        sf = _make_file("f1", data)
+        seg = _make_segment("SEG-f1-001", "f1", "CNT-BS-1-00001", data)
+        cnt = _make_container("CNT-BS-1-00001", "TAPE-1", len(data))
+        plan = BackupPlan(
+            backup_set_id="BS-1",
+            source_root="/src",
+            tapes=[tape],
+            containers=[cnt],
+            source_files=[sf],
+            segments=[seg],
+        )
+        self.file_system.register(Path("/src/path/f1"), data)
+        self.tape_drive.raise_tape_full_on("CNT-BS-1-00001")
+        callback_calls: list[object] = []
+
+        with pytest.raises(FileWriteError):
+            self.writer.write(plan, post_tape_callback=lambda td: callback_calls.append(td))
+
+        assert callback_calls == []
 
     # Test — TapeNotLoadedError wrapped into BackupPlanError
     def test_tape_not_loaded_raises_backup_plan_error(self) -> None:
@@ -420,3 +489,89 @@ class TestBackupWriter:
             self.writer.write(plan)
 
         assert isinstance(exc_info.value.__cause__, TapeNotLoadedError)
+
+
+class TestComputeSha256s:
+    """Tests for BackupWriter.compute_sha256s()."""
+
+    def setup_method(self) -> None:
+        self.tape_drive = FakeTapeDrive()
+        self.file_system = FakeFileSystem()
+        self.file_hasher = FakeFileHasher()
+        self.writer = BackupWriter(self.tape_drive, self.file_system, self.file_hasher)
+
+    def test_returns_correct_sha256s_for_all_segments(self) -> None:
+        data = b"A" * 100 + b"B" * 100
+        tape1 = _make_tape("TAPE-1", seq=1)
+        tape2 = _make_tape("TAPE-2", seq=2)
+        sf = _make_file("f1", data)
+        chunk1 = data[:100]
+        chunk2 = data[100:]
+        seg1 = _make_segment("SEG-f1-001", "f1", "CNT-BS-1-00001", chunk1, source_offset=0)
+        seg2 = _make_segment("SEG-f1-002", "f1", "CNT-BS-1-00002", chunk2, source_offset=100)
+        cnt1 = _make_container("CNT-BS-1-00001", "TAPE-1", len(chunk1), seq=1)
+        cnt2 = _make_container("CNT-BS-1-00002", "TAPE-2", len(chunk2), seq=2)
+        plan = BackupPlan(
+            backup_set_id="BS-1",
+            source_root="/src",
+            tapes=[tape1, tape2],
+            containers=[cnt1, cnt2],
+            source_files=[sf],
+            segments=[seg1, seg2],
+        )
+        self.file_system.register(Path("/src/path/f1"), data)
+
+        result = self.writer.compute_sha256s(plan)
+
+        assert result["SEG-f1-001"] == _sha256(chunk1)
+        assert result["SEG-f1-002"] == _sha256(chunk2)
+        assert result["SEG-f1-001"] != result["SEG-f1-002"]
+        assert result["SEG-f1-001"] != _sha256(data)
+
+    def test_raises_source_file_changed_error_when_file_modified(self) -> None:
+        original = b"original"
+        modified = b"modified!"
+        tape = _make_tape("TAPE-1")
+        sf = _make_file("f1", original)
+        seg = _make_segment("SEG-f1-001", "f1", "CNT-BS-1-00001", original)
+        cnt = _make_container("CNT-BS-1-00001", "TAPE-1", len(original))
+        plan = BackupPlan(
+            backup_set_id="BS-1",
+            source_root="/src",
+            tapes=[tape],
+            containers=[cnt],
+            source_files=[sf],
+            segments=[seg],
+        )
+        self.file_system.register(Path("/src/path/f1"), modified)
+
+        with pytest.raises(SourceFileChangedError):
+            self.writer.compute_sha256s(plan)
+
+    def test_does_not_load_or_unload_tape(self) -> None:
+        data = b"hello"
+        tape = _make_tape("TAPE-1")
+        sf = _make_file("f1", data)
+        seg = _make_segment("SEG-f1-001", "f1", "CNT-BS-1-00001", data)
+        cnt = _make_container("CNT-BS-1-00001", "TAPE-1", len(data))
+        plan = BackupPlan(
+            backup_set_id="BS-1",
+            source_root="/src",
+            tapes=[tape],
+            containers=[cnt],
+            source_files=[sf],
+            segments=[seg],
+        )
+        self.file_system.register(Path("/src/path/f1"), data)
+
+        self.writer.compute_sha256s(plan)
+
+        assert self.tape_drive.load_calls == []
+        assert self.tape_drive.unload_calls == 0
+
+    def test_returns_empty_dict_for_empty_plan(self) -> None:
+        plan = BackupPlan(backup_set_id="BS-1", source_root="/src")
+
+        result = self.writer.compute_sha256s(plan)
+
+        assert result == {}

@@ -15,6 +15,8 @@ from lto_backup.interfaces.catalog_serializer import CatalogSerializer
 from lto_backup.interfaces.clock import Clock
 
 _CATALOG_SCHEMA_VERSION = "2.0"
+# CatalogService writes a 64-byte hex SHA-256 checksum alongside the catalog JSON.
+_CATALOG_CHECKSUM_SIZE = 64
 
 logger = logging.getLogger(__name__)
 
@@ -34,20 +36,28 @@ class BackupPlanner:
                 f"got {config.tape_nominal_capacity_bytes}"
             )
 
-        backup_set_id = str(uuid.uuid4())
+        if config.max_container_size_bytes <= 0:
+            raise BackupPlanError(
+                f"max_container_size_bytes must be > 0, "
+                f"got {config.max_container_size_bytes}"
+            )
 
-        # Pass 1 — measure serialized draft catalog to determine reserved bytes per tape.
+        backup_set_id = str(uuid.uuid4())
+        now = self._clock.now()
+
+        # Pass 1 — measure serialized draft catalog (source files only) to get an
+        # initial lower bound for reserved_catalog_bytes.
         draft_catalog = Catalog(
             schema_version=_CATALOG_SCHEMA_VERSION,
             backup_set_id=backup_set_id,
-            created_at=self._clock.now(),
+            created_at=now,
             source_root=str(config.source_root),
             tapes=[],
             containers=[],
             source_files=source_files,
             segments=[],
         )
-        reserved_catalog_bytes = len(self._serializer.serialize(draft_catalog))
+        reserved_catalog_bytes = len(self._serializer.serialize(draft_catalog)) + _CATALOG_CHECKSUM_SIZE
 
         if reserved_catalog_bytes >= config.tape_nominal_capacity_bytes:
             raise BackupPlanError(
@@ -56,16 +66,84 @@ class BackupPlanner:
                 "cannot allocate any file data."
             )
 
-        usable_capacity = config.tape_nominal_capacity_bytes - reserved_catalog_bytes
+        # Iterative packing: start with the draft estimate, then measure the real
+        # catalog and repack if the estimate was too small.  Repeats until the
+        # reserved size is stable (usually converges in ≤ 2 iterations).
+        tapes, containers, segment_stubs = self._pack(
+            source_files, backup_set_id, reserved_catalog_bytes, config
+        )
 
-        if config.max_container_size_bytes <= 0:
-            raise BackupPlanError(
-                f"max_container_size_bytes must be > 0, "
-                f"got {config.max_container_size_bytes}"
+        for _ in range(10):  # guard against theoretical infinite loop
+            full_catalog = Catalog(
+                schema_version=_CATALOG_SCHEMA_VERSION,
+                backup_set_id=backup_set_id,
+                created_at=now,
+                source_root=str(config.source_root),
+                tapes=tapes,
+                containers=containers,
+                source_files=source_files,
+                segments=segment_stubs,
+            )
+            actual_reserved = len(self._serializer.serialize(full_catalog)) + _CATALOG_CHECKSUM_SIZE
+
+            if actual_reserved <= reserved_catalog_bytes:
+                break  # estimate was sufficient; no repack needed
+
+            logger.debug(
+                "Catalog estimate (%d bytes) too small for actual catalog (%d bytes); repacking.",
+                reserved_catalog_bytes,
+                actual_reserved,
+            )
+            reserved_catalog_bytes = actual_reserved
+
+            if reserved_catalog_bytes >= config.tape_nominal_capacity_bytes:
+                raise BackupPlanError(
+                    f"Reserved catalog size ({reserved_catalog_bytes} bytes) equals or exceeds "
+                    f"tape nominal capacity ({config.tape_nominal_capacity_bytes} bytes); "
+                    "cannot allocate any file data."
+                )
+
+            tapes, containers, segment_stubs = self._pack(
+                source_files, backup_set_id, reserved_catalog_bytes, config
             )
 
-        # Clamp container size to usable capacity so a single container always
-        # fits on one tape; if the caller specified a larger value, reduce silently.
+        total_bytes = sum(f.size_bytes for f in source_files)
+        logger.info(
+            "Backup plan created: backup_set_id=%s tapes=%d containers=%d "
+            "files=%d total_bytes=%d reserved_catalog_bytes=%d",
+            backup_set_id,
+            len(tapes),
+            len(containers),
+            len(source_files),
+            total_bytes,
+            reserved_catalog_bytes,
+        )
+
+        return BackupPlan(
+            backup_set_id=backup_set_id,
+            source_root=str(config.source_root),
+            tapes=tapes,
+            containers=containers,
+            source_files=source_files,
+            segments=segment_stubs,
+        )
+
+    # ------------------------------------------------------------------
+    # Private helpers
+    # ------------------------------------------------------------------
+
+    def _pack(
+        self,
+        source_files: list[SourceFile],
+        backup_set_id: str,
+        reserved_catalog_bytes: int,
+        config: BackupConfig,
+    ) -> tuple[list[Tape], list[Container], list[TapeSegment]]:
+        """Pack source files into containers and assign containers to tapes.
+
+        Returns (tapes, containers, segments) for the given *reserved_catalog_bytes*.
+        """
+        usable_capacity = config.tape_nominal_capacity_bytes - reserved_catalog_bytes
         effective_container_size = min(config.max_container_size_bytes, usable_capacity)
         if effective_container_size != config.max_container_size_bytes:
             logger.debug(
@@ -74,7 +152,7 @@ class BackupPlanner:
                 usable_capacity,
             )
 
-        # Pass 2 — pack source files sequentially into containers.
+        # Pack source files sequentially into containers.
         segment_stubs: list[TapeSegment] = []
         container_sizes: dict[str, int] = {}
         container_ids_in_order: list[str] = []
@@ -114,7 +192,7 @@ class BackupPlanner:
                     container_offset=container_fill,
                     source_offset=source_offset,
                     length_bytes=chunk,
-                    sha256="",
+                    sha256="0" * 64,
                 )
                 segment_stubs.append(segment)
 
@@ -136,7 +214,7 @@ class BackupPlanner:
         if current_container_id is not None:
             container_sizes[current_container_id] = container_fill
 
-        # Pass 3 — assign containers to tapes sequentially.
+        # Assign containers to tapes sequentially.
         tapes: list[Tape] = []
         containers: list[Container] = []
         tape_seq = 0
@@ -175,22 +253,4 @@ class BackupPlanner:
             containers.append(container)
             tape_offset += container_size
 
-        total_bytes = sum(f.size_bytes for f in source_files)
-        logger.info(
-            "Backup plan created: backup_set_id=%s tapes=%d containers=%d "
-            "files=%d total_bytes=%d",
-            backup_set_id,
-            len(tapes),
-            len(containers),
-            len(source_files),
-            total_bytes,
-        )
-
-        return BackupPlan(
-            backup_set_id=backup_set_id,
-            source_root=str(config.source_root),
-            tapes=tapes,
-            containers=containers,
-            source_files=source_files,
-            segments=segment_stubs,
-        )
+        return tapes, containers, segment_stubs

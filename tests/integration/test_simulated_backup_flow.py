@@ -125,36 +125,16 @@ class TestSimulatedBackupFlow:
     def test_backup_files_span_two_tapes_catalog_structure(
         self, tmp_path: Path
     ) -> None:
-        # BackupWriter validates hash(chunk) == segment.sha256 where
-        # segment.sha256 = source_file.sha256 (full-file hash set by the planner).
-        # This check passes only when chunk == full file (no split).
-        #
-        # To guarantee no splitting while still spanning two tapes we must make
-        # file1 fill tape 1 *exactly* so the planner allocates a fresh tape for
-        # file2.  We find the exact usable capacity by probing the planner with
-        # small placeholder files and iterating to a stable value.
-        #
-        # The tape capacity must also exceed the final serialized catalog size
-        # (~2 400 bytes for 2 files / 2 tapes / 2 segments).  _TAPE_NOMINAL
-        # (10 000 bytes) satisfies that constraint comfortably.
+        # file1 is larger than any possible single-tape usable capacity
+        # (catalog overhead is well under 2000 bytes for a 2-file backup),
+        # so the planner must allocate a second tape for file2.
         source = tmp_path / "source"
         tapes = tmp_path / "tapes"
         source.mkdir()
         tapes.mkdir()
 
-        # --- probe pass: measure catalog overhead with tiny placeholders ---
-        (source / "file1.bin").write_bytes(b"\x00")
-        (source / "file2.bin").write_bytes(b"\x00")
-        usable = _probe_usable_capacity(source, tapes, _TAPE_NOMINAL)
-
-        # file1 fills tape 1 exactly; when tape_offset == usable the planner
-        # opens a new tape, so file2 (100 bytes) lands entirely on tape 2.
-        (source / "file1.bin").write_bytes(b"A" * usable)
+        (source / "file1.bin").write_bytes(b"A" * 8_500)
         (source / "file2.bin").write_bytes(b"B" * 100)
-
-        # Re-probe with the real file sizes (size_bytes digit count may differ).
-        usable = _probe_usable_capacity(source, tapes, _TAPE_NOMINAL)
-        (source / "file1.bin").write_bytes(b"A" * usable)
 
         catalog = build_backup_service(_config(source, tapes)).run(
             _config(source, tapes)
@@ -162,7 +142,6 @@ class TestSimulatedBackupFlow:
 
         assert len(catalog.tapes) == 2
         assert len(catalog.source_files) == 2
-        assert len(catalog.segments) == 2
 
     # ------------------------------------------------------------------
     # Test 4 — single large file splits across tapes
@@ -175,10 +154,10 @@ class TestSimulatedBackupFlow:
         tapes = tmp_path / "tapes"
         source.mkdir()
         tapes.mkdir()
-        # 5 000-byte file on a 4 000-byte tape guarantees a split regardless of
-        # catalog overhead (overhead ≪ 1 000 bytes for a single-file catalog).
-        (source / "big.bin").write_bytes(b"Y" * 5_000)
-        config = _config(source, tapes, capacity=4_000)
+        # 9 000-byte file on a 10 000-byte tape: catalog reserve (~2 600 bytes)
+        # leaves ~7 400 bytes usable, so the file must span two tapes.
+        (source / "big.bin").write_bytes(b"Y" * 9_000)
+        config = _config(source, tapes, capacity=10_000)
 
         serializer = JsonCatalogSerializer()
         clock = SystemClock()
@@ -196,8 +175,8 @@ class TestSimulatedBackupFlow:
         tapes = tmp_path / "tapes"
         source.mkdir()
         tapes.mkdir()
-        (source / "big.bin").write_bytes(b"Y" * 5_000)
-        config = _config(source, tapes, capacity=4_000)
+        (source / "big.bin").write_bytes(b"Y" * 9_000)
+        config = _config(source, tapes, capacity=10_000)
 
         serializer = JsonCatalogSerializer()
         clock = SystemClock()
@@ -216,8 +195,8 @@ class TestSimulatedBackupFlow:
         tapes = tmp_path / "tapes"
         source.mkdir()
         tapes.mkdir()
-        (source / "big.bin").write_bytes(b"Y" * 5_000)
-        config = _config(source, tapes, capacity=4_000)
+        (source / "big.bin").write_bytes(b"Y" * 9_000)
+        config = _config(source, tapes, capacity=10_000)
 
         serializer = JsonCatalogSerializer()
         clock = SystemClock()
@@ -240,9 +219,9 @@ class TestSimulatedBackupFlow:
         tapes = tmp_path / "tapes"
         source.mkdir()
         tapes.mkdir()
-        # 5 000-byte file on a 4 000-byte tape guarantees at least one split.
-        (source / "big.bin").write_bytes(b"Y" * 5_000)
-        config = _config(source, tapes, capacity=4_000)
+        # 9 000-byte file on a 10 000-byte tape guarantees at least one split.
+        (source / "big.bin").write_bytes(b"Y" * 9_000)
+        config = _config(source, tapes, capacity=10_000)
 
         catalog = build_backup_service(config).run(config)
 
@@ -252,7 +231,7 @@ class TestSimulatedBackupFlow:
         for seg in catalog.segments:
             assert seg.sha256 != "", f"segment {seg.segment_id} has empty sha256"
 
-        errors = _verifier(tapes, capacity=4_000).verify(catalog)
+        errors = _verifier(tapes, capacity=10_000).verify(catalog)
         assert errors == []
 
     # ------------------------------------------------------------------

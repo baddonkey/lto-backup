@@ -21,12 +21,22 @@ class VirtualTape:
         self._root.mkdir(parents=True, exist_ok=True)
         self._data_dir.mkdir(exist_ok=True)
         self._catalog_dir.mkdir(exist_ok=True)
-        self._persist_meta()
+
+        # Restore bytes_written from persisted metadata so that reloading a
+        # partially-written tape keeps the correct remaining capacity.
+        meta_path = self._root / self.TAPE_META_FILENAME
+        if meta_path.exists():
+            meta = json.loads(meta_path.read_text())
+            self._bytes_written = int(meta.get("bytes_written", 0))
+        else:
+            self._persist_meta()
+
         logger.info(
-            "VirtualTape %s initialised at %s (capacity %d bytes)",
+            "VirtualTape %s initialised at %s (capacity %d bytes, %d bytes already written)",
             tape_id,
             root,
             capacity_bytes,
+            self._bytes_written,
         )
 
     # ------------------------------------------------------------------

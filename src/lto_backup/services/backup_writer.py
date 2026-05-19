@@ -3,6 +3,7 @@
 import hashlib
 import logging
 from collections import defaultdict
+from collections.abc import Callable
 from pathlib import Path
 
 from lto_backup.domain.backup_plan import BackupPlan
@@ -34,17 +35,69 @@ class BackupWriter:
         self._file_system = file_system
         self._file_hasher = file_hasher
 
-    def write(self, plan: BackupPlan) -> dict[str, str]:
-        """Execute the plan: load each tape, write its containers, then unload it.
+    def compute_sha256s(self, plan: BackupPlan) -> dict[str, str]:
+        """Read every source file and return a mapping of segment_id → slice SHA-256.
 
-        Returns a mapping of segment_id → sha256 of the bytes actually written
-        (i.e. the hash of the slice, not the full file).
+        Verifies the full-file SHA-256 against the scanned value and raises
+        SourceFileChangedError if any file has changed since planning.
+        No tape drive operations are performed.
         """
         sha256_map: dict[str, str] = {}
+        file_data_cache: dict[str, bytes] = {}
+        verified_file_ids: set[str] = set()
 
+        path_by_file_id: dict[str, Path] = {
+            sf.file_id: Path(sf.absolute_path) for sf in plan.source_files
+        }
+        source_file_by_id: dict[str, SourceFile] = {
+            sf.file_id: sf for sf in plan.source_files
+        }
+
+        for segment in plan.segments:
+            file_id = segment.file_id
+            file_path = path_by_file_id[file_id]
+
+            if file_id not in file_data_cache:
+                file_data_cache[file_id] = self._file_system.open_for_read(file_path)
+
+            file_data = file_data_cache[file_id]
+
+            if file_id not in verified_file_ids:
+                actual_sha256 = self._file_hasher.hash_bytes(file_data)
+                source_file = source_file_by_id[file_id]
+                if actual_sha256 != source_file.sha256:
+                    raise SourceFileChangedError(
+                        f"File {file_id!r} has changed since planning: "
+                        f"expected sha256 {source_file.sha256!r}, "
+                        f"got {actual_sha256!r}."
+                    )
+                verified_file_ids.add(file_id)
+
+            chunk = file_data[
+                segment.source_offset : segment.source_offset + segment.length_bytes
+            ]
+            sha256_map[segment.segment_id] = hashlib.sha256(chunk).hexdigest()
+
+        logger.info(
+            "BackupWriter: pre-computed SHA-256s for %d segment(s).", len(sha256_map)
+        )
+        return sha256_map
+
+    def write(
+        self,
+        plan: BackupPlan,
+        post_tape_callback: Callable[[TapeDrive], None] | None = None,
+    ) -> None:
+        """Execute the plan: load each tape, write its containers, then unload it.
+
+        If *post_tape_callback* is provided it is called with the tape drive
+        after all containers for a tape have been written but before the tape
+        is unloaded.  BackupService uses this to write the catalog to the tape
+        while it is still loaded, avoiding a second load/unload cycle.
+        """
         if not plan.tapes:
             logger.info("BackupWriter: plan is empty, nothing to write.")
-            return sha256_map
+            return
 
         # Build lookup: tape_id → list[Container] sorted by sequence_number.
         containers_by_tape: dict[str, list[Container]] = defaultdict(list)
@@ -121,8 +174,6 @@ class BackupWriter:
                             segment.source_offset : segment.source_offset
                             + segment.length_bytes
                         ]
-                        slice_sha256 = hashlib.sha256(chunk).hexdigest()
-                        sha256_map[segment.segment_id] = slice_sha256
 
                         buffer[
                             segment.container_offset : segment.container_offset
@@ -151,6 +202,9 @@ class BackupWriter:
                         ) from exc
 
                     bytes_written += container.size_bytes
+
+                if post_tape_callback is not None:
+                    post_tape_callback(self._tape_drive)
             finally:
                 self._tape_drive.unload_tape()
 
@@ -160,5 +214,4 @@ class BackupWriter:
                 bytes_written,
             )
 
-        return sha256_map
 
