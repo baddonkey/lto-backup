@@ -1,0 +1,102 @@
+classDiagram
+    %% ── PROTOCOL ─────────────────────────────────────────
+    class TapeDrive {
+        <<Protocol>>
+        +load_tape(tape_id) None
+        +unload_tape() None
+        +current_tape_id() str
+        +remaining_capacity_bytes() int
+        +write_file(source_path, dest_name) None
+        +write_bytes(dest_name, data) None
+        +read_file(name) bytes
+        +list_files() list~str~
+    }
+
+    %% ── IMPLEMENTATIONS ──────────────────────────────────
+    class LinuxLtoTapeDrive {
+        -Path _device
+        -Path _mount_point
+        -str _tape_id
+        -bool _mounted
+        +load_tape(tape_id) None
+        +unload_tape() None
+        +current_tape_id() str
+        +remaining_capacity_bytes() int
+        +write_file(source_path, dest_name) None
+        +write_bytes(dest_name, data) None
+        +read_file(name) bytes
+        +list_files() list~str~
+    }
+
+    class SimulatorTapeDrive {
+        -Path _tapes_root
+        -int _tape_capacity_bytes
+        -SimulatorFailureConfig _failure_config
+        -VirtualTape _loaded_tape
+        +load_tape(tape_id) None
+        +unload_tape() None
+        +current_tape_id() str
+        +remaining_capacity_bytes() int
+        +write_file(source_path, dest_name) None
+        +write_bytes(dest_name, data) None
+        +read_file(name) bytes
+        +list_files() list~str~
+    }
+
+    TapeDrive <|.. LinuxLtoTapeDrive : implements
+    TapeDrive <|.. SimulatorTapeDrive : implements
+
+    %% ── SIMULATOR INTERNALS ──────────────────────────────
+    class VirtualTape {
+        -str _tape_id
+        -Path _root
+        -int _capacity_bytes
+        -int _bytes_written
+        +tape_id str
+        +capacity_bytes int
+        +bytes_written int
+        +remaining_bytes int
+        +write(name, data) None
+        +read(name) bytes
+        +list_files() list~str~
+    }
+
+    class SimulatorFailureConfig {
+        +bool fail_on_write
+        +bool fail_on_read
+        +bool fail_on_load
+        +int|None fail_after_bytes_written
+        +str error_message
+        +set~str~ failed_tape_ids
+    }
+
+    SimulatorTapeDrive "1" --> "0..1" VirtualTape : loaded tape
+    SimulatorTapeDrive --> SimulatorFailureConfig : configured with
+
+    %% ── DOMAIN ───────────────────────────────────────────
+    class Tape {
+        +str tape_id
+        +str backup_set_id
+        +int sequence_number
+        +int nominal_capacity_bytes
+        +int reserved_catalog_bytes
+        +usable_capacity_bytes() int
+    }
+
+    %% ── SERVICES USING TAPEDRIVE ─────────────────────────
+    class TapeSwitchService {
+        -TapeDrive _tape_drive
+        -UserPrompt _prompt
+        -int _max_retries
+        +request_and_load(tape_id, seq_no) None
+    }
+
+    class UserPrompt {
+        <<Protocol>>
+        +ask(message) str
+        +inform(message) None
+    }
+
+    TapeSwitchService --> TapeDrive : drives
+    TapeSwitchService --> UserPrompt : prompts
+    TapeSwitchService ..> Tape : loads by tape_id

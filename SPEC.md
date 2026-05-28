@@ -60,7 +60,7 @@ usable_capacity = nominal_capacity - reserved_catalog_bytes
 
 ## Class Diagram
 
-See [docs/class-diagram.md](docs/class-diagram.md) for the full Mermaid class diagram covering domain objects, interfaces, services, and exceptions.
+See [docs/class-diagram.mmd](docs/class-diagram.mmd) for the Mermaid class diagram covering the `TapeDrive` protocol, its implementations (`LinuxLtoTapeDrive`, `SimulatorTapeDrive`), simulator internals, and `TapeSwitchService`.
 
 ---
 
