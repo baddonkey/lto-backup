@@ -6,6 +6,8 @@ from collections import defaultdict
 from collections.abc import Callable, Iterator
 from pathlib import Path
 
+_IO_CHUNK_SIZE = 4 << 20  # 4 MiB — maximum bytes per read_segment call
+
 from lto_backup.domain.backup_plan import BackupPlan
 from lto_backup.domain.container import Container
 from lto_backup.domain.source_file import SourceFile
@@ -67,12 +69,16 @@ class BackupWriter:
                     )
                 verified_file_ids.add(file_id)
 
-            chunk = self._file_system.read_segment(
-                file_path,
-                segment.source_offset,
-                segment.length_bytes,
-            )
-            sha256_map[segment.segment_id] = hashlib.sha256(chunk).hexdigest()
+            digest = hashlib.sha256()
+            src_offset = segment.source_offset
+            remaining = segment.length_bytes
+            while remaining > 0:
+                n = min(remaining, _IO_CHUNK_SIZE)
+                piece = self._file_system.read_segment(file_path, src_offset, n)
+                digest.update(piece)
+                src_offset += len(piece)
+                remaining -= len(piece)
+            sha256_map[segment.segment_id] = digest.hexdigest()
 
         logger.info(
             "BackupWriter: pre-computed SHA-256s for %d segment(s).", len(sha256_map)
@@ -196,11 +202,6 @@ class BackupWriter:
         for segment in segments:  # segments must be sorted by container_offset
             if segment.container_offset > cursor:
                 yield bytes(segment.container_offset - cursor)
-            chunk = self._file_system.read_segment(
-                path_by_file_id[segment.file_id],
-                segment.source_offset,
-                segment.length_bytes,
-            )
             logger.debug(
                 "BackupWriter: reading segment %s for container %s "
                 "at offset %d (%d bytes)",
@@ -209,7 +210,16 @@ class BackupWriter:
                 segment.container_offset,
                 segment.length_bytes,
             )
-            yield chunk
+            src_offset = segment.source_offset
+            remaining = segment.length_bytes
+            while remaining > 0:
+                n = min(remaining, _IO_CHUNK_SIZE)
+                piece = self._file_system.read_segment(
+                    path_by_file_id[segment.file_id], src_offset, n
+                )
+                yield piece
+                src_offset += len(piece)
+                remaining -= len(piece)
             cursor = segment.container_offset + segment.length_bytes
         if cursor < container.size_bytes:
             yield bytes(container.size_bytes - cursor)
