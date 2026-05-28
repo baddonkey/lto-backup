@@ -246,3 +246,39 @@ tests/
 - `typing.Protocol` interfaces for every infrastructure boundary.
 - Domain objects are frozen dataclasses, free of I/O concerns.
 - Strict mypy type checking (`mypy --strict`).
+
+## Using the API directly (without the CLI)
+
+You can drive a real LTO drive from a Python script by calling the wiring helpers directly:
+
+```python
+import logging
+from pathlib import Path
+
+from lto_backup.config.backup_config import BackupConfig
+from lto_backup.config.logging_config import LoggingConfig
+from lto_backup.wiring.container import build_ltfs_backup_service
+
+SOURCE      = Path("/mnt/records")
+DEVICE      = Path("/dev/nst0")        # no-rewind tape device
+MOUNT_POINT = Path("/mnt/ltfs")        # empty LTFS mount point
+
+LoggingConfig(verbose=True).configure()
+logger = logging.getLogger(__name__)
+
+config = BackupConfig(
+    source_root=SOURCE,
+    tapes_root=MOUNT_POINT,
+    tape_nominal_capacity_bytes=12 * 1_000_000_000_000,   # 12 TB (LTO-8)
+    max_container_size_bytes=200 * 1_000_000_000,          # 200 GB containers
+)
+
+service = build_ltfs_backup_service(config, device=DEVICE, mount_point=MOUNT_POINT)
+catalog = service.run(config)
+
+logger.info("Backup complete. Set: %s, tapes: %d, files: %d",
+            catalog.backup_set_id, len(catalog.tapes), len(catalog.source_files))
+```
+
+`build_ltfs_backup_service` wires `LinuxLtoTapeDrive` in place of the simulator — everything else (scanner, planner, writer, catalog service) is identical.
+Replace `build_ltfs_backup_service` with `build_backup_service` and pass a `tapes_root` directory to switch to the simulator.
