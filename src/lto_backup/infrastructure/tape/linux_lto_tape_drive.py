@@ -166,6 +166,19 @@ class LinuxLtoTapeDrive:
         logger.debug("Read %d bytes from %s on tape", len(data), name)
         return data
 
+    def read_file_segment(self, name: str, offset: int, length: int) -> bytes:
+        self._require_mounted()
+        path = self._data_dir() / name
+        if not path.exists():
+            raise FileNotFoundError(f"File {name!r} not found on tape")
+        with path.open("rb") as fh:
+            fh.seek(offset)
+            data = fh.read(length)
+        logger.debug(
+            "Read %d bytes at offset %d from %s on tape", len(data), offset, name
+        )
+        return data
+
     def list_files(self) -> list[str]:
         self._require_mounted()
         data_dir = self._data_dir()

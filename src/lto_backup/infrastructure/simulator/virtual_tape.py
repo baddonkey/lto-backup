@@ -99,6 +99,20 @@ class VirtualTape:
         logger.debug("VirtualTape %s: read %d bytes from '%s'", self._tape_id, len(data), name)
         return data
 
+    def read_segment(self, name: str, offset: int, length: int) -> bytes:
+        path = self._resolve_path(name)
+        with path.open("rb") as fh:
+            fh.seek(offset)
+            data = fh.read(length)
+        logger.debug(
+            "VirtualTape %s: read %d bytes at offset %d from '%s'",
+            self._tape_id,
+            len(data),
+            offset,
+            name,
+        )
+        return data
+
     def list_files(self) -> list[str]:
         return [p.name for p in self._data_dir.iterdir() if p.is_file()]
 

@@ -62,6 +62,11 @@ class FakeTapeDrive:
         assert self._loaded is not None
         return self._tapes_data[self._loaded][name]
 
+    def read_file_segment(self, name: str, offset: int, length: int) -> bytes:
+        assert self._loaded is not None
+        data = self._tapes_data[self._loaded][name]
+        return data[offset : offset + length]
+
     def list_files(self) -> list[str]:
         return []
 

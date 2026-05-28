@@ -148,6 +148,21 @@ class SimulatorTapeDrive:
         logger.debug("Read %d bytes from %s on tape %s", len(data), name, tape.tape_id)
         return data
 
+    def read_file_segment(self, name: str, offset: int, length: int) -> bytes:
+        tape = self._require_tape()
+        if self._failure_config.fail_on_read:
+            logger.error("Read of %s rejected by failure injection on tape %s", name, tape.tape_id)
+            raise OSError(self._failure_config.error_message)
+        data = tape.read_segment(name, offset, length)
+        logger.debug(
+            "Read %d bytes at offset %d from %s on tape %s",
+            len(data),
+            offset,
+            name,
+            tape.tape_id,
+        )
+        return data
+
     def list_files(self) -> list[str]:
         return self._require_tape().list_files()
 

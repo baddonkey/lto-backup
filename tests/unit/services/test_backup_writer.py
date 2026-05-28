@@ -77,6 +77,9 @@ class FakeTapeDrive:
     def read_file(self, name: str) -> bytes:
         return self.written[name]
 
+    def read_file_segment(self, name: str, offset: int, length: int) -> bytes:
+        return self.written[name][offset : offset + length]
+
     def list_files(self) -> list[str]:
         return list(self.written.keys())
 

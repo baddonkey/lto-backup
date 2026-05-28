@@ -1,5 +1,6 @@
 """VerificationService — reads tape contents and verifies checksums."""
 
+import hashlib
 import logging
 from collections import defaultdict
 
@@ -13,6 +14,7 @@ logger = logging.getLogger(__name__)
 
 _CATALOG_PATH = "catalog/catalog.json"
 _CHECKSUM_PATH = "catalog/catalog.sha256"
+_IO_CHUNK_SIZE = 4 << 20  # 4 MiB — maximum bytes per read_file_segment call
 
 
 class VerificationService:
@@ -85,12 +87,19 @@ class VerificationService:
         for container in catalog.containers:
             if container.tape_id != tape_id:
                 continue
-            container_data = self._tape_drive.read_file(container.container_id)
             for segment in segments_by_container.get(container.container_id, []):
-                actual_data = container_data[
-                    segment.container_offset : segment.container_offset + segment.length_bytes
-                ]
-                actual_hash = self._file_hasher.hash_bytes(actual_data)
+                digest = hashlib.sha256()
+                offset = segment.container_offset
+                remaining = segment.length_bytes
+                while remaining > 0:
+                    n = min(remaining, _IO_CHUNK_SIZE)
+                    piece = self._tape_drive.read_file_segment(
+                        container.container_id, offset, n
+                    )
+                    digest.update(piece)
+                    offset += len(piece)
+                    remaining -= len(piece)
+                actual_hash = digest.hexdigest()
                 if actual_hash != segment.sha256:
                     msg = (
                         f"Tape {tape_id}: segment {segment.segment_id} "
