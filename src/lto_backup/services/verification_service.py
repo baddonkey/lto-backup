@@ -96,6 +96,8 @@ class VerificationService:
                     piece = self._tape_drive.read_file_segment(
                         container.container_id, offset, n
                     )
+                    if not piece:
+                        break  # Unexpected EOF — checksum will mismatch below
                     digest.update(piece)
                     offset += len(piece)
                     remaining -= len(piece)
