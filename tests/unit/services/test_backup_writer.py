@@ -1,6 +1,7 @@
 """Unit tests for BackupWriter service."""
 
 import hashlib
+from collections.abc import Iterator
 from datetime import datetime
 from pathlib import Path
 
@@ -66,6 +67,13 @@ class FakeTapeDrive:
             raise TapeFullError(f"Tape full writing {destination_name!r}.")
         self.written[destination_name] = data
 
+    def write_stream(
+        self, destination_name: str, size_bytes: int, chunks: Iterator[bytes]
+    ) -> None:
+        if destination_name in self._raise_tape_full_for:
+            raise TapeFullError(f"Tape full writing {destination_name!r}.")
+        self.written[destination_name] = b"".join(chunks)
+
     def read_file(self, name: str) -> bytes:
         return self.written[name]
 
@@ -82,6 +90,9 @@ class FakeFileSystem:
     def register(self, path: Path, data: bytes) -> None:
         self._files[path] = data
 
+    def get_data(self, path: Path) -> bytes:
+        return self._files[path]
+
     def list_files(self, root: Path) -> list[Path]:
         raise NotImplementedError
 
@@ -91,15 +102,18 @@ class FakeFileSystem:
     def modified_at_timestamp(self, path: Path) -> float:
         return 0.0
 
-    def open_for_read(self, path: Path) -> bytes:
-        return self._files[path]
+    def read_segment(self, path: Path, offset: int, length: int) -> bytes:
+        return self._files[path][offset : offset + length]
 
 
 class FakeFileHasher:
     """Computes real SHA-256 so segment checksums are correct by default."""
 
+    def __init__(self, file_system: FakeFileSystem) -> None:
+        self._file_system = file_system
+
     def hash_file(self, path: Path) -> str:
-        raise NotImplementedError
+        return hashlib.sha256(self._file_system.get_data(path)).hexdigest()
 
     def hash_bytes(self, data: bytes) -> str:
         return hashlib.sha256(data).hexdigest()
@@ -181,7 +195,7 @@ class TestBackupWriter:
     def setup_method(self) -> None:
         self.tape_drive = FakeTapeDrive()
         self.file_system = FakeFileSystem()
-        self.file_hasher = FakeFileHasher()
+        self.file_hasher = FakeFileHasher(self.file_system)
         self.writer = BackupWriter(self.tape_drive, self.file_system, self.file_hasher)
 
     # Test 1 — single file on single tape
@@ -497,7 +511,7 @@ class TestComputeSha256s:
     def setup_method(self) -> None:
         self.tape_drive = FakeTapeDrive()
         self.file_system = FakeFileSystem()
-        self.file_hasher = FakeFileHasher()
+        self.file_hasher = FakeFileHasher(self.file_system)
         self.writer = BackupWriter(self.tape_drive, self.file_system, self.file_hasher)
 
     def test_returns_correct_sha256s_for_all_segments(self) -> None:

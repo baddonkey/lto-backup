@@ -21,8 +21,10 @@ class LocalFileSystem:
     def modified_at_timestamp(self, path: Path) -> float:
         return path.stat().st_mtime
 
-    def open_for_read(self, path: Path) -> bytes:
-        logger.debug("Reading file: %s", path)
-        data = path.read_bytes()
+    def read_segment(self, path: Path, offset: int, length: int) -> bytes:
+        logger.debug("Reading %d bytes at offset %d from %s", length, offset, path)
+        with path.open("rb") as fh:
+            fh.seek(offset)
+            data = fh.read(length)
         logger.debug("Read %d bytes from %s", len(data), path)
         return data

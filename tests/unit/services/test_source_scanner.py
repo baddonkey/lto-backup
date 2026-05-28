@@ -30,7 +30,7 @@ class FakeFileSystem:
     def modified_at_timestamp(self, path: Path) -> float:
         return self._files[path][1]
 
-    def open_for_read(self, path: Path) -> bytes:
+    def read_segment(self, path: Path, offset: int, length: int) -> bytes:
         return b""
 
 

@@ -1,4 +1,5 @@
 import logging
+from collections.abc import Iterator
 from pathlib import Path
 
 from lto_backup.exceptions.tape_full_error import TapeFullError
@@ -92,6 +93,47 @@ class SimulatorTapeDrive:
         logger.debug(
             "Wrote %d bytes as %s on tape %s (%d remaining)",
             len(data),
+            destination_name,
+            tape.tape_id,
+            tape.remaining_bytes,
+        )
+
+    def write_stream(
+        self, destination_name: str, size_bytes: int, chunks: Iterator[bytes]
+    ) -> None:
+        tape = self._require_tape()
+        if self._failure_config.fail_on_write:
+            logger.warning(
+                "Write of %s rejected by failure injection on tape %s",
+                destination_name,
+                tape.tape_id,
+            )
+            raise TapeFullError(self._failure_config.error_message)
+        threshold = self._failure_config.fail_after_bytes_written
+        if threshold is not None and tape.bytes_written + size_bytes > threshold:
+            logger.warning(
+                "Write of %s would exceed injected threshold (%d bytes) on tape %s",
+                destination_name,
+                threshold,
+                tape.tape_id,
+            )
+            raise TapeFullError(self._failure_config.error_message)
+        if size_bytes > tape.remaining_bytes:
+            logger.error(
+                "Tape full: cannot write %d bytes to %s on tape %s (%d bytes remaining)",
+                size_bytes,
+                destination_name,
+                tape.tape_id,
+                tape.remaining_bytes,
+            )
+            raise TapeFullError(
+                f"Write of {size_bytes} bytes exceeds remaining capacity "
+                f"{tape.remaining_bytes} on tape {tape.tape_id}"
+            )
+        tape.write_stream(destination_name, chunks)
+        logger.debug(
+            "Wrote %d bytes as %s on tape %s (%d remaining)",
+            size_bytes,
             destination_name,
             tape.tape_id,
             tape.remaining_bytes,

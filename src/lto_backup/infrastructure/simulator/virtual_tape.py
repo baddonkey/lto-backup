@@ -1,5 +1,6 @@
 import json
 import logging
+from collections.abc import Iterator
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -72,6 +73,23 @@ class VirtualTape:
             "VirtualTape %s: wrote %d bytes as '%s' (%d bytes remaining)",
             self._tape_id,
             len(data),
+            name,
+            self.remaining_bytes,
+        )
+
+    def write_stream(self, name: str, chunks: Iterator[bytes]) -> None:
+        target = self._resolve_path(name)
+        actual = 0
+        with target.open("wb") as fh:
+            for chunk in chunks:
+                fh.write(chunk)
+                actual += len(chunk)
+        self._bytes_written += actual
+        self._persist_meta()
+        logger.debug(
+            "VirtualTape %s: wrote %d bytes as '%s' (%d bytes remaining)",
+            self._tape_id,
+            actual,
             name,
             self.remaining_bytes,
         )

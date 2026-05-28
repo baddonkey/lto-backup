@@ -2,6 +2,7 @@ import errno
 import logging
 import shutil
 import subprocess
+from collections.abc import Iterator
 from pathlib import Path
 
 from lto_backup.exceptions.file_write_error import FileWriteError
@@ -135,6 +136,26 @@ class LinuxLtoTapeDrive:
                 f"Failed to write {destination_name} to tape: {exc}"
             ) from exc
         logger.debug("Wrote %d bytes as %s on tape", len(data), destination_name)
+
+    def write_stream(
+        self, destination_name: str, size_bytes: int, chunks: Iterator[bytes]
+    ) -> None:
+        self._require_mounted()
+        dest = self._data_dir() / destination_name
+        try:
+            with dest.open("wb") as fh:
+                for chunk in chunks:
+                    fh.write(chunk)
+        except OSError as exc:
+            if exc.errno == errno.ENOSPC:
+                raise TapeFullError(
+                    f"No space left on tape while writing {destination_name}"
+                ) from exc
+            logger.error("write_stream failed for %s: %s", destination_name, exc)
+            raise FileWriteError(
+                f"Failed to write {destination_name} to tape: {exc}"
+            ) from exc
+        logger.debug("Wrote %d bytes as %s on tape", size_bytes, destination_name)
 
     def read_file(self, name: str) -> bytes:
         self._require_mounted()

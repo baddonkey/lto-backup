@@ -2,6 +2,7 @@
 
 import hashlib
 from datetime import datetime
+from collections.abc import Iterator
 from pathlib import Path
 
 from lto_backup.domain.catalog import Catalog
@@ -51,6 +52,11 @@ class FakeTapeDrive:
 
     def write_bytes(self, destination_name: str, data: bytes) -> None:
         pass
+
+    def write_stream(
+        self, destination_name: str, size_bytes: int, chunks: Iterator[bytes]
+    ) -> None:
+        raise NotImplementedError
 
     def read_file(self, name: str) -> bytes:
         assert self._loaded is not None

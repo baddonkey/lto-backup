@@ -3,7 +3,7 @@
 import hashlib
 import logging
 from collections import defaultdict
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 from lto_backup.domain.backup_plan import BackupPlan
@@ -43,7 +43,6 @@ class BackupWriter:
         No tape drive operations are performed.
         """
         sha256_map: dict[str, str] = {}
-        file_data_cache: dict[str, bytes] = {}
         verified_file_ids: set[str] = set()
 
         path_by_file_id: dict[str, Path] = {
@@ -57,13 +56,8 @@ class BackupWriter:
             file_id = segment.file_id
             file_path = path_by_file_id[file_id]
 
-            if file_id not in file_data_cache:
-                file_data_cache[file_id] = self._file_system.open_for_read(file_path)
-
-            file_data = file_data_cache[file_id]
-
             if file_id not in verified_file_ids:
-                actual_sha256 = self._file_hasher.hash_bytes(file_data)
+                actual_sha256 = self._file_hasher.hash_file(file_path)
                 source_file = source_file_by_id[file_id]
                 if actual_sha256 != source_file.sha256:
                     raise SourceFileChangedError(
@@ -73,9 +67,11 @@ class BackupWriter:
                     )
                 verified_file_ids.add(file_id)
 
-            chunk = file_data[
-                segment.source_offset : segment.source_offset + segment.length_bytes
-            ]
+            chunk = self._file_system.read_segment(
+                file_path,
+                segment.source_offset,
+                segment.length_bytes,
+            )
             sha256_map[segment.segment_id] = hashlib.sha256(chunk).hexdigest()
 
         logger.info(
@@ -121,9 +117,8 @@ class BackupWriter:
             sf.file_id: sf for sf in plan.source_files
         }
 
-        # File data and verification caches — shared across all tapes so that
-        # files split across tape boundaries are read and verified only once.
-        file_data_cache: dict[str, bytes] = {}
+        # Track verified files across all tapes so that files split across tape
+        # boundaries are verified only once.
         verified_file_ids: set[str] = set()
 
         for tape in plan.tapes:
@@ -143,24 +138,15 @@ class BackupWriter:
             bytes_written = 0
             try:
                 for container in tape_containers:
-                    buffer = bytearray(container.size_bytes)
                     segments = segments_by_container.get(container.container_id, [])
 
+                    # Verify each file's full SHA-256 once before writing any of
+                    # its segments to avoid partial writes on a mismatch.
                     for segment in segments:
                         file_id = segment.file_id
-                        file_path = path_by_file_id[file_id]
-
-                        # Load file data into cache on first access.
-                        if file_id not in file_data_cache:
-                            file_data_cache[file_id] = self._file_system.open_for_read(
-                                file_path
-                            )
-
-                        file_data = file_data_cache[file_id]
-
-                        # Verify full-file sha256 exactly once per file.
                         if file_id not in verified_file_ids:
-                            actual_sha256 = self._file_hasher.hash_bytes(file_data)
+                            file_path = path_by_file_id[file_id]
+                            actual_sha256 = self._file_hasher.hash_file(file_path)
                             source_file = source_file_by_id[file_id]
                             if actual_sha256 != source_file.sha256:
                                 raise SourceFileChangedError(
@@ -170,32 +156,17 @@ class BackupWriter:
                                 )
                             verified_file_ids.add(file_id)
 
-                        chunk = file_data[
-                            segment.source_offset : segment.source_offset
-                            + segment.length_bytes
-                        ]
-
-                        buffer[
-                            segment.container_offset : segment.container_offset
-                            + segment.length_bytes
-                        ] = chunk
-
-                        logger.debug(
-                            "BackupWriter: packed segment %s into container %s "
-                            "at offset %d (%d bytes)",
-                            segment.segment_id,
-                            container.container_id,
-                            segment.container_offset,
-                            len(chunk),
-                        )
-
                     logger.debug(
                         "BackupWriter: writing container %s (%d bytes)",
                         container.container_id,
                         container.size_bytes,
                     )
                     try:
-                        self._tape_drive.write_bytes(container.container_id, bytes(buffer))
+                        self._tape_drive.write_stream(
+                            container.container_id,
+                            container.size_bytes,
+                            self._container_chunks(container, segments, path_by_file_id),
+                        )
                     except TapeFullError as exc:
                         raise FileWriteError(
                             f"Tape full while writing container {container.container_id!r}."
@@ -213,5 +184,34 @@ class BackupWriter:
                 tape.tape_id,
                 bytes_written,
             )
+
+    def _container_chunks(
+        self,
+        container: Container,
+        segments: list[TapeSegment],
+        path_by_file_id: dict[str, Path],
+    ) -> Iterator[bytes]:
+        """Yield the bytes of a container in sequence, with zero-padding for gaps."""
+        cursor = 0
+        for segment in segments:  # segments must be sorted by container_offset
+            if segment.container_offset > cursor:
+                yield bytes(segment.container_offset - cursor)
+            chunk = self._file_system.read_segment(
+                path_by_file_id[segment.file_id],
+                segment.source_offset,
+                segment.length_bytes,
+            )
+            logger.debug(
+                "BackupWriter: reading segment %s for container %s "
+                "at offset %d (%d bytes)",
+                segment.segment_id,
+                container.container_id,
+                segment.container_offset,
+                segment.length_bytes,
+            )
+            yield chunk
+            cursor = segment.container_offset + segment.length_bytes
+        if cursor < container.size_bytes:
+            yield bytes(container.size_bytes - cursor)
 
 

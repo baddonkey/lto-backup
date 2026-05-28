@@ -1,3 +1,4 @@
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Protocol
 
@@ -14,6 +15,10 @@ class TapeDrive(Protocol):
     def write_file(self, source_path: Path, destination_name: str) -> None: ...
 
     def write_bytes(self, destination_name: str, data: bytes) -> None: ...
+
+    def write_stream(
+        self, destination_name: str, size_bytes: int, chunks: Iterator[bytes]
+    ) -> None: ...
 
     def read_file(self, name: str) -> bytes: ...
 

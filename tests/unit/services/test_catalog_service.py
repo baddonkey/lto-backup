@@ -1,6 +1,7 @@
 """Unit tests for CatalogService."""
 
 import hashlib
+from collections.abc import Iterator
 from datetime import datetime
 
 import pytest
@@ -66,6 +67,11 @@ class FakeTapeDrive:
         if destination_name in self._raise_on:
             raise OSError(f"Simulated write failure for {destination_name!r}")
         self.written[destination_name] = data
+
+    def write_stream(
+        self, destination_name: str, size_bytes: int, chunks: Iterator[bytes]
+    ) -> None:
+        raise NotImplementedError
 
 
 # ---------------------------------------------------------------------------
