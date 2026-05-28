@@ -3,6 +3,7 @@
 import pytest
 from datetime import datetime
 from pathlib import Path
+from pathlib import PurePath
 
 from lto_backup.config.backup_config import BackupConfig
 from lto_backup.domain.catalog import Catalog
@@ -169,7 +170,7 @@ class TestBackupPlanner:
         files = [_make_file("f1", 10)]
         plan = self.planner.plan(files, self.config)
         assert plan.backup_set_id != ""
-        assert plan.source_root == "/src"
+        assert PurePath(plan.source_root) == PurePath("/src")
 
     def test_segment_ids_use_file_id_and_sequence(self) -> None:
         # A 2000-byte file splits into 3 segments; ids should follow SEG-<file_id>-001 etc.
