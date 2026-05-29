@@ -13,6 +13,7 @@ from lto_backup.domain.source_file import SourceFile
 from lto_backup.domain.tape import Tape
 from lto_backup.domain.tape_segment import TapeSegment
 from lto_backup.exceptions.backup_plan_error import BackupPlanError
+from lto_backup.exceptions.container_verification_error import ContainerVerificationError
 from lto_backup.exceptions.file_write_error import FileWriteError
 from lto_backup.exceptions.source_file_changed_error import SourceFileChangedError
 from lto_backup.exceptions.tape_full_error import TapeFullError
@@ -35,12 +36,17 @@ class FakeTapeDrive:
         self.written: dict[str, bytes] = {}
         self._raise_tape_full_for: set[str] = set()
         self._raise_not_loaded_for: set[str] = set()
+        self._readback_tamper: dict[str, bytes] = {}
 
     def raise_tape_full_on(self, destination_name: str) -> None:
         self._raise_tape_full_for.add(destination_name)
 
     def raise_not_loaded_on(self, tape_id: str) -> None:
         self._raise_not_loaded_for.add(tape_id)
+
+    def tamper_readback(self, destination_name: str, replacement: bytes) -> None:
+        """Cause future read_file_segment calls for *destination_name* to return *replacement*."""
+        self._readback_tamper[destination_name] = replacement
 
     def load_tape(self, tape_id: str) -> None:
         if tape_id in self._raise_not_loaded_for:
@@ -75,13 +81,13 @@ class FakeTapeDrive:
         self.written[destination_name] = b"".join(chunks)
 
     def read_file(self, name: str) -> bytes:
+        if name in self._readback_tamper:
+            return self._readback_tamper[name]
         return self.written[name]
 
     def read_file_segment(self, name: str, offset: int, length: int) -> bytes:
-        return self.written[name][offset : offset + length]
-
-    def list_files(self) -> list[str]:
-        return list(self.written.keys())
+        source = self._readback_tamper.get(name, self.written[name])
+        return source[offset : offset + length]
 
 
 class FakeFileSystem:
@@ -483,6 +489,33 @@ class TestBackupWriter:
             self.writer.write(plan, post_tape_callback=lambda td: callback_calls.append(td))
 
         assert callback_calls == []
+
+    # Test 11 — container read-back mismatch raises ContainerVerificationError
+    def test_container_readback_mismatch_raises_container_verification_error(self) -> None:
+        data = b"genuine container payload"
+        tape = _make_tape("TAPE-1")
+        sf = _make_file("f1", data)
+        segment = _make_segment("SEG-f1-001", "f1", "CNT-BS-1-00001", data)
+        container = _make_container("CNT-BS-1-00001", "TAPE-1", len(data))
+        plan = BackupPlan(
+            backup_set_id="BS-1",
+            source_root="/src",
+            tapes=[tape],
+            containers=[container],
+            source_files=[sf],
+            segments=[segment],
+        )
+        self.file_system.register(Path("/src/path/f1"), data)
+        # Simulate corruption-on-tape: the bytes read back differ from those written.
+        self.tape_drive.tamper_readback(
+            "CNT-BS-1-00001", b"X" * len(data)
+        )
+
+        with pytest.raises(ContainerVerificationError):
+            self.writer.write(plan)
+
+        # The tape must still be unloaded after the verification failure.
+        assert self.tape_drive.unload_calls == 1
 
     # Test — TapeNotLoadedError wrapped into BackupPlanError
     def test_tape_not_loaded_raises_backup_plan_error(self) -> None:
