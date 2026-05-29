@@ -58,6 +58,17 @@ usable_capacity = nominal_capacity - reserved_catalog_bytes
 
 ---
 
+## Out of Scope
+
+The following concerns are intentionally **not** handled by lto-backup and must be solved by surrounding tooling or hardware:
+
+- **Compression** — relies on the LTO drive's built-in hardware compression. The application writes raw bytes and computes SHA-256 over uncompressed data.
+- **Encryption** — out of scope. Apply encryption at the storage layer upstream (e.g. LUKS on the source filesystem) or use LTO hardware encryption (`stenc`) on the drive. The catalog format does not record encryption metadata.
+- **Incremental / differential backups** — every run produces a complete, self-contained backup set. There is no notion of a parent backup, changed-file detection, or merging across sets. Re-running selectively over a subset of sources is the operator's responsibility.
+- **Deduplication** — identical content stored twice is written twice.
+
+---
+
 ## Class Diagram
 
 See [docs/tapedrive.mmd](docs/tapedrive.mmd) for the Mermaid class diagram covering the `TapeDrive` protocol, its implementations (`LinuxLtoTapeDrive`, `SimulatorTapeDrive`), simulator internals, and `TapeSwitchService`.
