@@ -1,6 +1,7 @@
 import logging
 
 from lto_backup.exceptions.tape_not_loaded_error import TapeNotLoadedError
+from lto_backup.exceptions.wrong_tape_error import WrongTapeError
 from lto_backup.interfaces.tape_drive import TapeDrive
 from lto_backup.interfaces.user_prompt import UserPrompt
 
@@ -44,10 +45,27 @@ class TapeSwitchService:
 
             try:
                 self._tape_drive.load_tape(tape_id)
-                logger.info("Tape %s successfully loaded on attempt %d.", tape_id, attempt + 1)
-                return
             except TapeNotLoadedError as exc:
                 last_exc = exc
+                continue
+
+            recorded = self._tape_drive.read_tape_id()
+            if recorded and recorded != tape_id:
+                logger.error(
+                    "Tape identity mismatch: expected %s but drive reports %s.",
+                    tape_id,
+                    recorded,
+                )
+                try:
+                    self._tape_drive.unload_tape()
+                except TapeNotLoadedError:
+                    pass
+                raise WrongTapeError(
+                    f"Wrong tape inserted: expected {tape_id}, found {recorded}."
+                )
+
+            logger.info("Tape %s successfully loaded on attempt %d.", tape_id, attempt + 1)
+            return
 
         raise TapeNotLoadedError(
             f"Failed to load tape {tape_id} after {self._max_retries} retries."

@@ -116,6 +116,17 @@ class VirtualTape:
     def list_files(self) -> list[str]:
         return [p.name for p in self._data_dir.iterdir() if p.is_file()]
 
+    def read_recorded_tape_id(self) -> str:
+        """Return the tape_id stored in the on-disk metadata, or empty string."""
+        meta_path = self._root / self.TAPE_META_FILENAME
+        if not meta_path.exists():
+            return ""
+        try:
+            meta = json.loads(meta_path.read_text())
+        except (OSError, json.JSONDecodeError):
+            return ""
+        return str(meta.get("tape_id", ""))
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------

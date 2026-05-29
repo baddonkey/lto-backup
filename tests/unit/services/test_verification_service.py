@@ -44,6 +44,9 @@ class FakeTapeDrive:
     def current_tape_id(self) -> str:
         return self._loaded or ""
 
+    def read_tape_id(self) -> str:
+        return self._loaded or ""
+
     def remaining_capacity_bytes(self) -> int:
         return 0
 

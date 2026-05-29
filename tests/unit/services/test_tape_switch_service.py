@@ -3,22 +3,36 @@ from unittest.mock import MagicMock
 import pytest
 
 from lto_backup.exceptions.tape_not_loaded_error import TapeNotLoadedError
+from lto_backup.exceptions.wrong_tape_error import WrongTapeError
 from lto_backup.interfaces.tape_drive import TapeDrive
 from lto_backup.interfaces.user_prompt import UserPrompt
 from lto_backup.services.tape_switch_service import TapeSwitchService
 
 
-def _make_drive(fail_times: int = 0) -> TapeDrive:
-    """Return a fake TapeDrive whose load_tape raises TapeNotLoadedError *fail_times* then succeeds."""
+def _make_drive(fail_times: int = 0, recorded_tape_id: str | None = None) -> TapeDrive:
+    """Return a fake TapeDrive whose load_tape raises TapeNotLoadedError *fail_times* then succeeds.
+
+    ``recorded_tape_id`` controls what ``read_tape_id`` returns. ``None`` mirrors the
+    requested tape_id (identity matches), ``""`` simulates a freshly formatted tape,
+    any other value simulates a mismatch.
+    """
     drive = MagicMock(spec=TapeDrive)
     call_count = {"n": 0}
+    requested: dict[str, str] = {}
 
     def load_tape(tape_id: str) -> None:
         call_count["n"] += 1
         if call_count["n"] <= fail_times:
             raise TapeNotLoadedError(f"load failed (attempt {call_count['n']})")
+        requested["id"] = tape_id
+
+    def read_tape_id() -> str:
+        if recorded_tape_id is None:
+            return requested.get("id", "")
+        return recorded_tape_id
 
     drive.load_tape.side_effect = load_tape
+    drive.read_tape_id.side_effect = read_tape_id
     return drive
 
 
@@ -76,3 +90,25 @@ class TestTapeSwitchService:
 
         # Only the initial attempt is made — no retries
         assert drive.load_tape.call_count == 1
+
+    def test_wrong_tape_raises_wrong_tape_error_and_unloads(self) -> None:
+        drive = _make_drive(fail_times=0, recorded_tape_id="TAPE-999")
+        prompt = _make_prompt()
+        service = TapeSwitchService(drive, prompt, max_retries=5)
+
+        with pytest.raises(WrongTapeError):
+            service.request_and_load("TAPE-001", 1)
+
+        drive.load_tape.assert_called_once_with("TAPE-001")
+        drive.unload_tape.assert_called_once()
+
+    def test_blank_recorded_tape_id_is_accepted(self) -> None:
+        # Freshly formatted tape with no recorded identity loads successfully.
+        drive = _make_drive(fail_times=0, recorded_tape_id="")
+        prompt = _make_prompt()
+        service = TapeSwitchService(drive, prompt, max_retries=5)
+
+        service.request_and_load("TAPE-001", 1)
+
+        drive.load_tape.assert_called_once_with("TAPE-001")
+        drive.unload_tape.assert_not_called()

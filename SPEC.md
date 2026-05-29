@@ -131,6 +131,8 @@ Each backup run executes five stages:
 
 `TapeSwitchService.request_and_load(tape_id, sequence_number)` prompts the operator via `UserPrompt` to insert the next tape, then calls `TapeDrive.load_tape`. On `TapeNotLoadedError` it retries up to `max_retries` (default 5) times before re-raising.
 
+After a successful load it calls `TapeDrive.read_tape_id()` and compares the recorded identity against the requested `tape_id`. If the values disagree (operator inserted the wrong cartridge), the service unloads the tape and raises `WrongTapeError`. A blank recorded identity (freshly formatted, never-written tape) is accepted so that initial backups can claim new cartridges.
+
 ---
 
 ## Verification

@@ -62,6 +62,9 @@ class FakeTapeDrive:
         assert self.loaded_tape_id is not None
         return self.loaded_tape_id
 
+    def read_tape_id(self) -> str:
+        return self.loaded_tape_id or ""
+
     def remaining_capacity_bytes(self) -> int:
         return 2**40
 

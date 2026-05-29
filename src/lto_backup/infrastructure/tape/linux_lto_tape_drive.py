@@ -100,6 +100,16 @@ class LinuxLtoTapeDrive:
         self._require_mounted()
         return self._tape_id
 
+    def read_tape_id(self) -> str:
+        self._require_mounted()
+        tape_id_path = self._mount_point / _TAPE_ID_FILE
+        if not tape_id_path.exists():
+            return ""
+        try:
+            return tape_id_path.read_text().strip()
+        except OSError:
+            return ""
+
     def remaining_capacity_bytes(self) -> int:
         self._require_mounted()
         usage = shutil.disk_usage(self._mount_point)

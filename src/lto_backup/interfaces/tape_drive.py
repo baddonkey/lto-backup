@@ -10,6 +10,13 @@ class TapeDrive(Protocol):
 
     def current_tape_id(self) -> str: ...
 
+    def read_tape_id(self) -> str:
+        """Return the tape_id recorded on the currently-loaded tape's metadata.
+
+        Returns an empty string if no identity is recorded (freshly formatted tape).
+        """
+        ...
+
     def remaining_capacity_bytes(self) -> int: ...
 
     def write_file(self, source_path: Path, destination_name: str) -> None: ...

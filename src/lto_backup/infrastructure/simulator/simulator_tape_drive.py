@@ -51,6 +51,11 @@ class SimulatorTapeDrive:
         self._require_tape()
         return self._loaded_tape.tape_id  # type: ignore[union-attr]
 
+    def read_tape_id(self) -> str:
+        """Return the tape_id stored in the loaded tape's on-disk metadata."""
+        tape = self._require_tape()
+        return tape.read_recorded_tape_id()
+
     def remaining_capacity_bytes(self) -> int:
         self._require_tape()
         return self._loaded_tape.remaining_bytes  # type: ignore[union-attr]
