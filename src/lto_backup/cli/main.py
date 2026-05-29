@@ -36,10 +36,10 @@ def main() -> None:
     )
     parser.add_argument(
         "--container-size-gb",
-        required=True,
         type=float,
+        default=5.0,
         metavar="GB",
-        help="Maximum container size in gigabytes.",
+        help="Maximum container size in gigabytes (default: 5).",
     )
     parser.add_argument(
         "--verbose",

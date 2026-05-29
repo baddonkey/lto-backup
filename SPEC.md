@@ -14,7 +14,7 @@ A tape is a logical LTO cartridge. In simulator mode a tape is represented by a 
 
 A container is a fixed-size logical block written as a single file onto a tape. Source files and file-slices are packed sequentially into containers. A container never spans two tapes — it lives entirely on one tape.
 
-The user controls container size via `--container-size-gb`. Typical values: 100 GB–500 GB. Smaller containers reduce recovery scope per read error; larger containers reduce catalog overhead.
+The user controls container size via `--container-size-gb` (default **5 GB**). Typical values: 1 GB–50 GB. Smaller containers reduce recovery scope per read error and keep the catalog reserve modest; larger containers reduce per-container metadata overhead but make a single bad container costlier to lose.
 
 ### Catalog
 
