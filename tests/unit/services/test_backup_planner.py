@@ -30,6 +30,31 @@ class FakeCatalogSerializer:
         raise NotImplementedError
 
 
+class GrowingCatalogSerializer:
+    """Serializer whose output size grows with container and segment count.
+
+    Exercises the planner's iterative reserve algorithm: as more containers /
+    segments are added during a re-pack, the catalog gets bigger, which may
+    in turn force an extra tape.
+    """
+
+    def __init__(self, base: int, per_container: int, per_segment: int) -> None:
+        self._base = base
+        self._per_container = per_container
+        self._per_segment = per_segment
+
+    def serialize(self, catalog: Catalog) -> bytes:
+        size = (
+            self._base
+            + self._per_container * len(catalog.containers)
+            + self._per_segment * len(catalog.segments)
+        )
+        return b"x" * size
+
+    def deserialize(self, data: bytes) -> Catalog:
+        raise NotImplementedError
+
+
 class FakeClock:
     """Returns a fixed datetime."""
 
@@ -192,3 +217,81 @@ class TestBackupPlanner:
         assert plan.tapes == []
         assert plan.segments == []
         assert plan.source_files == []
+
+
+class TestReserveStability:
+    """The iterative reserve algorithm must converge so the catalog actually fits.
+
+    Uses a serializer whose size grows with container and segment count, which
+    forces multiple repack iterations and (for the sized inputs below) one extra
+    tape beyond the draft estimate.
+    """
+
+    def _build_catalog(self, plan: object, serializer: GrowingCatalogSerializer) -> Catalog:
+        # Local import-style construction avoiding accidental coupling to the
+        # planner's internal Catalog assembly.
+        return Catalog(
+            schema_version="2.0",
+            backup_set_id=plan.backup_set_id,  # type: ignore[attr-defined]
+            created_at=datetime(2026, 1, 1),
+            source_root=plan.source_root,  # type: ignore[attr-defined]
+            tapes=plan.tapes,  # type: ignore[attr-defined]
+            containers=plan.containers,  # type: ignore[attr-defined]
+            source_files=plan.source_files,  # type: ignore[attr-defined]
+            segments=plan.segments,  # type: ignore[attr-defined]
+        )
+
+    def test_reserve_covers_final_serialized_catalog(self) -> None:
+        serializer = GrowingCatalogSerializer(base=50, per_container=40, per_segment=30)
+        planner = BackupPlanner(serializer, FakeClock())
+        config = BackupConfig(
+            source_root=Path("/src"),
+            tapes_root=Path("/tapes"),
+            tape_nominal_capacity_bytes=2000,
+            max_container_size_bytes=300,
+        )
+        files = [_make_file("f1", 1800)]
+
+        plan = planner.plan(files, config)
+
+        # Convergence invariant: reserve must be >= actual catalog size.
+        catalog = self._build_catalog(plan, serializer)
+        actual_size = len(serializer.serialize(catalog)) + 64  # 64-byte checksum
+
+        assert plan.tapes, "plan should allocate at least one tape"
+        for tape in plan.tapes:
+            assert tape.reserved_catalog_bytes >= actual_size, (
+                f"Tape {tape.tape_id} reserve {tape.reserved_catalog_bytes} "
+                f"< actual catalog size {actual_size}"
+            )
+
+    def test_reserve_growth_can_force_extra_tape_and_still_fits(self) -> None:
+        # Tuned so a draft (no containers) underestimates the reserve and the
+        # repack moves data to an extra tape; the final reserve must still
+        # match the final tape count.
+        serializer = GrowingCatalogSerializer(base=50, per_container=30, per_segment=20)
+        planner = BackupPlanner(serializer, FakeClock())
+        config = BackupConfig(
+            source_root=Path("/src"),
+            tapes_root=Path("/tapes"),
+            tape_nominal_capacity_bytes=1500,
+            max_container_size_bytes=200,
+        )
+        files = [_make_file(f"f{i}", 200) for i in range(12)]  # 12 containers
+
+        plan = planner.plan(files, config)
+
+        # Every container assigned to some tape, every tape uses the same
+        # final reserve, and no tape is overfilled.
+        assert {c.tape_id for c in plan.containers} == {t.tape_id for t in plan.tapes}
+        reserves = {t.reserved_catalog_bytes for t in plan.tapes}
+        assert len(reserves) == 1, f"all tapes must share reserve, got {reserves}"
+
+        usable = config.tape_nominal_capacity_bytes - next(iter(reserves))
+        used_per_tape: dict[str, int] = {}
+        for c in plan.containers:
+            used_per_tape[c.tape_id] = used_per_tape.get(c.tape_id, 0) + c.size_bytes
+        for tape_id, used in used_per_tape.items():
+            assert used <= usable, (
+                f"Tape {tape_id} overfilled: used={used} > usable={usable}"
+            )
