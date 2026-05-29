@@ -1,0 +1,121 @@
+flowchart TD
+    Start([Start]) --> ConfigureLogging
+
+    subgraph Initialisation
+        ConfigureLogging[Configure logging from logging.json]
+        ConfigureLogging --> SetPaths[Set source_root and tapes_root paths]
+        SetPaths --> CreateConfig[Create BackupConfig\ntape_nominal_capacity = 10 GB\nmax_container_size = 1 GB]
+        CreateConfig --> BuildService[build_backup_service config\n─ wire LocalFileSystem, Sha256FileHasher,\n  SystemClock, JsonCatalogSerializer,\n  SourceScanner, BackupPlanner,\n  BackupWriter, CatalogService]
+    end
+
+    BuildService --> RunBackup
+
+    subgraph BackupService_run ["BackupService.run(config)"]
+        RunBackup[[Enter run]]
+
+        RunBackup --> Scan
+        subgraph SourceScanner_scan ["SourceScanner.scan(source_root)"]
+            Scan[List all files recursively]
+            Scan --> ScanLoop{More files?}
+            ScanLoop -- Yes --> HashFile[Hash file with SHA-256\nRecord path, size, mtime, UUID5 file_id]
+            HashFile --> ScanLoop
+            ScanLoop -- No --> ScanDone[Return list of SourceFile]
+        end
+
+        ScanDone --> Plan
+        subgraph BackupPlanner_plan ["BackupPlanner.plan(source_files, config)"]
+            Plan[Estimate initial catalog size\nreserved_bytes = len serialized draft + 64]
+            Plan --> PackLoop{Catalog fits\nin reserved space?}
+            PackLoop -- No, grow reservation --> PackFiles
+            PackLoop -- Yes --> PlanDone[Return BackupPlan]
+            PackFiles[Pack files into containers\n split files that exceed container boundary]
+            PackFiles --> AssignTapes[Assign containers to tapes\nsplit at usable_capacity boundary]
+            AssignTapes --> BuildFullCatalog[Serialize full catalog\nmeasure actual size]
+            BuildFullCatalog --> PackLoop
+        end
+
+        PlanDone --> ComputeHashes
+        subgraph BackupWriter_compute ["BackupWriter.compute_sha256s(plan)"]
+            ComputeHashes[For each container]
+            ComputeHashes --> VerifyFile{File already\nverified?}
+            VerifyFile -- No --> RehashFile[Re-hash source file\nCompare against scanned SHA-256]
+            RehashFile --> FileChanged{SHA-256\nmatch?}
+            FileChanged -- No --> RaiseChanged([Raise SourceFileChangedError])
+            FileChanged -- Yes --> HashSegment
+            VerifyFile -- Yes --> HashSegment
+            HashSegment[Hash segment bytes\nHash container bytes with padding]
+            HashSegment --> MoreSegments{More segments\nor containers?}
+            MoreSegments -- Yes --> ComputeHashes
+            MoreSegments -- No --> HashDone[Return segment_map, container_map]
+        end
+
+        HashDone --> BuildCatalog
+        subgraph CatalogService_build ["CatalogService.build_catalog(plan, sha256s)"]
+            BuildCatalog[Attach SHA-256 to every segment\nAttach SHA-256 to every container\nStamp created_at timestamp]
+            BuildCatalog --> CatalogReady[Return Catalog]
+        end
+
+        CatalogReady --> WriteTapes
+        subgraph BackupWriter_write ["BackupWriter.write(plan, callback)"]
+            WriteTapes[For each Tape in plan]
+            WriteTapes --> LoadTape[TapeDrive.load_tape tape_id]
+            LoadTape --> LoadOK{Tape loaded\nsuccessfully?}
+            LoadOK -- No --> RaiseLoad([Raise BackupPlanError])
+            LoadOK -- Yes --> WriteContainer[For each Container on tape]
+            WriteContainer --> VerifyIntegrity[Re-hash source files\nin container]
+            VerifyIntegrity --> IntegrityOK{Files\nunchanged?}
+            IntegrityOK -- No --> RaiseIntegrity([Raise SourceFileChangedError])
+            IntegrityOK -- Yes --> StreamWrite[TapeDrive.write_stream\nstream container bytes + zero padding\nupdate write digest]
+            StreamWrite --> Readback[Read container back from tape\ncompute readback SHA-256]
+            Readback --> ReadbackOK{Digests\nmatch?}
+            ReadbackOK -- No --> RaiseVerify([Raise ContainerVerificationError])
+            ReadbackOK -- Yes --> MoreContainers{More\ncontainers?}
+            MoreContainers -- Yes --> WriteContainer
+            MoreContainers -- No --> Callback
+
+            Callback[Invoke post_tape_callback]
+            Callback --> WriteCatalogToTape
+            subgraph CatalogService_write ["CatalogService.write_catalog_to_tape(catalog, tape_drive)"]
+                WriteCatalogToTape[Serialize catalog to JSON bytes\nCompute SHA-256 of bytes]
+                WriteCatalogToTape --> WriteJSON[write_bytes catalog/catalog.json]
+                WriteJSON --> WriteSHA[write_bytes catalog/catalog.sha256]
+            end
+            WriteSHA --> UnloadTape[TapeDrive.unload_tape]
+            UnloadTape --> MoreTapes{More\ntapes?}
+            MoreTapes -- Yes --> WriteTapes
+            MoreTapes -- No --> WriteDone
+        end
+
+        WriteDone[Write complete]
+        WriteDone --> ReturnCatalog[Return Catalog]
+    end
+
+    ReturnCatalog --> PrintBackup[Print tape count and file count]
+
+    PrintBackup --> Verify
+    subgraph VerificationService_verify ["VerificationService.verify(catalog)"]
+        Verify[For each Tape in catalog]
+        Verify --> VLoadTape[TapeDrive.load_tape tape_id]
+        VLoadTape --> ReadCatalogJSON[Read catalog/catalog.json from tape]
+        ReadCatalogJSON --> ReadCatalogSHA[Read catalog/catalog.sha256 from tape]
+        ReadCatalogSHA --> CheckCatalogHash{Catalog SHA-256\nmatches?}
+        CheckCatalogHash -- No --> RecordCatalogError[Record catalog corruption error]
+        CheckCatalogHash -- Yes --> VerifyContainer[For each Container on tape]
+        VerifyContainer --> ReadContainer[Read container bytes from tape]
+        ReadContainer --> CheckContainerHash{Container SHA-256\nmatches catalog?}
+        CheckContainerHash -- No --> RecordContainerError[Record container corruption error]
+        CheckContainerHash -- Yes --> MoreVContainers{More\ncontainers?}
+        RecordContainerError --> MoreVContainers
+        MoreVContainers -- Yes --> VerifyContainer
+        MoreVContainers -- No --> VUnloadTape[TapeDrive.unload_tape]
+        RecordCatalogError --> VUnloadTape
+        VUnloadTape --> MoreVTapes{More\ntapes?}
+        MoreVTapes -- Yes --> Verify
+        MoreVTapes -- No --> VerifyDone[Return error list]
+    end
+
+    VerifyDone --> CheckErrors{Any errors?}
+    CheckErrors -- Yes --> PrintErrors[Print CORRUPT entries]
+    CheckErrors -- No --> PrintClean[Print All tapes verified clean]
+    PrintErrors --> End([End])
+    PrintClean --> End
