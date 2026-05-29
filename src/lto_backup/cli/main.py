@@ -5,6 +5,7 @@ import logging
 import sys
 from pathlib import Path
 
+from lto_backup import __version__
 from lto_backup.config.backup_config import BackupConfig
 from lto_backup.config.logging_config import LoggingConfig
 from lto_backup.exceptions.backup_error import BackupError
@@ -20,6 +21,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         prog="lto-backup",
         description="Back up a file-based records management system to LTO tape.",
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"%(prog)s {__version__}",
     )
     parser.add_argument(
         "--source",
