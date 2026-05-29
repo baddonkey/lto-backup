@@ -9,7 +9,13 @@ from lto_backup import __version__
 from lto_backup.config.backup_config import BackupConfig
 from lto_backup.config.logging_config import LoggingConfig
 from lto_backup.exceptions.backup_error import BackupError
-from lto_backup.wiring.container import build_backup_service, build_ltfs_backup_service
+from lto_backup.services.report_service import ReportService
+from lto_backup.wiring.container import (
+    build_backup_service,
+    build_ltfs_backup_service,
+    build_ltfs_verification_service,
+    build_verification_service,
+)
 
 _BYTES_PER_TB = 1_000_000_000_000
 _BYTES_PER_GB = 1_000_000_000
@@ -71,6 +77,11 @@ def main() -> None:
         metavar="DIR",
         help="LTFS mount point (required when --device is used).",
     )
+    parser.add_argument(
+        "--report-dir",
+        metavar="DIR",
+        help="Write an HTML archive report to this directory after backup.",
+    )
 
     args = parser.parse_args()
 
@@ -105,4 +116,29 @@ def main() -> None:
         f"Backup complete. {len(catalog.tapes)} tape(s), "
         f"{len(catalog.source_files)} file(s)."
     )
+
+    if args.report_dir:
+        report_dir = Path(args.report_dir)
+        try:
+            if args.simulator:
+                verifier = build_verification_service(config)
+            else:
+                verifier = build_ltfs_verification_service(
+                    config,
+                    device=Path(args.device),
+                    mount_point=Path(args.mount_point),
+                )
+            errors = verifier.verify(catalog)
+        except BackupError as exc:
+            logger.error("Verification failed: %s", exc)
+            print(f"Verification error: {exc}", file=sys.stderr)
+            sys.exit(1)
+
+        report_path = ReportService().generate(catalog, errors, report_dir)
+        print(f"Report written to {report_path}")
+
+        if errors:
+            for err in errors:
+                print(f"CORRUPT: {err}", file=sys.stderr)
+            sys.exit(1)
 

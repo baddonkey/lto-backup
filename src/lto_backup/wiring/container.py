@@ -17,6 +17,7 @@ from lto_backup.services.backup_writer import BackupWriter
 from lto_backup.services.catalog_service import CatalogService
 from lto_backup.services.source_scanner import SourceScanner
 from lto_backup.services.tape_switch_service import TapeSwitchService
+from lto_backup.services.verification_service import VerificationService
 
 
 class StdinUserPrompt:
@@ -64,4 +65,27 @@ def build_tape_switch_service(tape_drive: TapeDrive) -> TapeSwitchService:
     """Wire and return a TapeSwitchService using stdin/stdout for operator interaction."""
     prompt: UserPrompt = StdinUserPrompt()
     return TapeSwitchService(tape_drive, prompt)
+
+
+def _build_verification_service_with_drive(tape_drive: TapeDrive) -> VerificationService:
+    serializer = JsonCatalogSerializer()
+    file_hasher = Sha256FileHasher()
+    return VerificationService(tape_drive, serializer, file_hasher)
+
+
+def build_verification_service(config: BackupConfig) -> VerificationService:
+    """Wire and return a VerificationService backed by the simulator tape drive."""
+    tape_drive = SimulatorTapeDrive(
+        config.tapes_root,
+        config.tape_nominal_capacity_bytes,
+    )
+    return _build_verification_service_with_drive(tape_drive)
+
+
+def build_ltfs_verification_service(
+    config: BackupConfig, device: Path, mount_point: Path
+) -> VerificationService:
+    """Wire and return a VerificationService backed by a real LTFS tape drive."""
+    tape_drive = LinuxLtoTapeDrive(device, mount_point)
+    return _build_verification_service_with_drive(tape_drive)
 
