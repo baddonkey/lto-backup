@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from lto_backup.domain.catalog import Catalog
+from lto_backup.domain.container import Container
 from lto_backup.exceptions.file_write_error import FileWriteError
 
 logger = logging.getLogger(__name__)
@@ -153,7 +154,7 @@ class ReportService:
 """
 
     def _tape_rows(self, catalog: Catalog) -> str:
-        containers_by_tape: dict[str, list] = {}
+        containers_by_tape: dict[str, list[Container]] = {}
         for container in catalog.containers:
             containers_by_tape.setdefault(container.tape_id, []).append(container)
 
