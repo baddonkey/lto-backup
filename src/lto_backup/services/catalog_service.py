@@ -25,12 +25,24 @@ class CatalogService:
         self._serializer = serializer
         self._clock = clock
 
-    def build_catalog(self, plan: BackupPlan, segment_sha256s: dict[str, str]) -> Catalog:
+    def build_catalog(
+        self,
+        plan: BackupPlan,
+        segment_sha256s: dict[str, str],
+        container_sha256s: dict[str, str] | None = None,
+    ) -> Catalog:
+        container_sha256s = container_sha256s or {}
         segments = [
             _dc_replace(seg, sha256=segment_sha256s[seg.segment_id])
             if seg.segment_id in segment_sha256s
             else seg
             for seg in plan.segments
+        ]
+        containers = [
+            _dc_replace(c, sha256=container_sha256s[c.container_id])
+            if c.container_id in container_sha256s
+            else c
+            for c in plan.containers
         ]
         return Catalog(
             schema_version=_SCHEMA_VERSION,
@@ -38,7 +50,7 @@ class CatalogService:
             created_at=self._clock.now(),
             source_root=plan.source_root,
             tapes=plan.tapes,
-            containers=plan.containers,
+            containers=containers,
             source_files=plan.source_files,
             segments=segments,
         )

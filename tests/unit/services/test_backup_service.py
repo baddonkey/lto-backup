@@ -50,9 +50,11 @@ class FakeWriter:
         self.sha256s_plan: BackupPlan | None = None
         self.raise_on_write: Exception | None = None
 
-    def compute_sha256s(self, plan: BackupPlan) -> dict[str, str]:
+    def compute_sha256s(
+        self, plan: BackupPlan
+    ) -> tuple[dict[str, str], dict[str, str]]:
         self.sha256s_plan = plan
-        return {}
+        return {}, {}
 
     def write(
         self,
@@ -75,7 +77,12 @@ class FakeCatalogService:
         self.build_calls: list[BackupPlan] = []
         self.write_calls: int = 0
 
-    def build_catalog(self, plan: BackupPlan, segment_sha256s: dict[str, str]) -> Catalog:
+    def build_catalog(
+        self,
+        plan: BackupPlan,
+        segment_sha256s: dict[str, str],
+        container_sha256s: dict[str, str] | None = None,
+    ) -> Catalog:
         self.build_calls.append(plan)
         return self._catalog
 

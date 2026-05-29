@@ -5,6 +5,7 @@ import logging
 from collections import defaultdict
 
 from lto_backup.domain.catalog import Catalog
+from lto_backup.domain.container import Container
 from lto_backup.domain.tape_segment import TapeSegment
 from lto_backup.interfaces.catalog_serializer import CatalogSerializer
 from lto_backup.interfaces.file_hasher import FileHasher
@@ -84,9 +85,26 @@ class VerificationService:
         for seg in catalog.segments:
             segments_by_container[seg.container_id].append(seg)
 
-        for container in catalog.containers:
-            if container.tape_id != tape_id:
+        # Iterate containers on this tape in tape_offset order so the drive
+        # streams forward rather than seeking back and forth.
+        tape_containers = sorted(
+            (c for c in catalog.containers if c.tape_id == tape_id),
+            key=lambda c: c.tape_offset,
+        )
+
+        for container in tape_containers:
+            container_ok = True
+            if container.sha256:
+                container_hash_error = self._check_container_hash(tape_id, container)
+                if container_hash_error is not None:
+                    errors.append(container_hash_error)
+                    container_ok = False
+
+            if not container_ok:
+                # Skip segment-level checks for a container whose blob is already
+                # known to be corrupt — every segment in it would also mismatch.
                 continue
+
             for segment in segments_by_container.get(container.container_id, []):
                 digest = hashlib.sha256()
                 offset = segment.container_offset
@@ -111,4 +129,29 @@ class VerificationService:
                     logger.warning(msg)
                     errors.append(msg)
         return errors
+
+    def _check_container_hash(self, tape_id: str, container: Container) -> str | None:
+        digest = hashlib.sha256()
+        offset = 0
+        remaining = container.size_bytes
+        while remaining > 0:
+            n = min(remaining, _IO_CHUNK_SIZE)
+            piece = self._tape_drive.read_file_segment(
+                container.container_id, offset, n
+            )
+            if not piece:
+                break
+            digest.update(piece)
+            offset += len(piece)
+            remaining -= len(piece)
+        actual = digest.hexdigest()
+        if actual != container.sha256:
+            msg = (
+                f"Tape {tape_id}: container {container.container_id} "
+                f"checksum mismatch "
+                f"(expected {container.sha256}, got {actual})"
+            )
+            logger.warning(msg)
+            return msg
+        return None
 

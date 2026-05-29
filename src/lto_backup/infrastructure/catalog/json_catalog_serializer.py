@@ -99,6 +99,7 @@ class JsonCatalogSerializer:
             "sequence_number": c.sequence_number,
             "tape_offset": c.tape_offset,
             "size_bytes": c.size_bytes,
+            "sha256": c.sha256,
         }
 
     @staticmethod
@@ -147,6 +148,7 @@ class JsonCatalogSerializer:
             sequence_number=int(d["sequence_number"]),
             tape_offset=int(d["tape_offset"]),
             size_bytes=int(d["size_bytes"]),
+            sha256=str(d.get("sha256", "")),
         )
 
     @staticmethod

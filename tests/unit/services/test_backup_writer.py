@@ -571,12 +571,16 @@ class TestComputeSha256s:
         )
         self.file_system.register(Path("/src/path/f1"), data)
 
-        result = self.writer.compute_sha256s(plan)
+        seg_map, cnt_map = self.writer.compute_sha256s(plan)
 
-        assert result["SEG-f1-001"] == _sha256(chunk1)
-        assert result["SEG-f1-002"] == _sha256(chunk2)
-        assert result["SEG-f1-001"] != result["SEG-f1-002"]
-        assert result["SEG-f1-001"] != _sha256(data)
+        assert seg_map["SEG-f1-001"] == _sha256(chunk1)
+        assert seg_map["SEG-f1-002"] == _sha256(chunk2)
+        assert seg_map["SEG-f1-001"] != seg_map["SEG-f1-002"]
+        assert seg_map["SEG-f1-001"] != _sha256(data)
+        # Each container is filled exactly by its single segment, so the
+        # container hash equals the segment hash for these inputs.
+        assert cnt_map["CNT-BS-1-00001"] == _sha256(chunk1)
+        assert cnt_map["CNT-BS-1-00002"] == _sha256(chunk2)
 
     def test_raises_source_file_changed_error_when_file_modified(self) -> None:
         original = b"original"
@@ -622,6 +626,7 @@ class TestComputeSha256s:
     def test_returns_empty_dict_for_empty_plan(self) -> None:
         plan = BackupPlan(backup_set_id="BS-1", source_root="/src")
 
-        result = self.writer.compute_sha256s(plan)
+        seg_map, cnt_map = self.writer.compute_sha256s(plan)
 
-        assert result == {}
+        assert seg_map == {}
+        assert cnt_map == {}

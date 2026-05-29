@@ -37,8 +37,10 @@ class BackupService:
         plan = self._planner.plan(source_files, config)
         logger.info("BackupService: plan requires %d tape(s)", len(plan.tapes))
 
-        sha256_map = self._writer.compute_sha256s(plan)
-        catalog = self._catalog_service.build_catalog(plan, sha256_map)
+        sha256_map, container_sha256_map = self._writer.compute_sha256s(plan)
+        catalog = self._catalog_service.build_catalog(
+            plan, sha256_map, container_sha256_map
+        )
 
         self._writer.write(
             plan,

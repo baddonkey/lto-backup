@@ -109,14 +109,22 @@ def _make_tape(tape_id: str) -> Tape:
     )
 
 
-def _make_container(container_id: str, tape_id: str) -> Container:
+def _make_container(
+    container_id: str,
+    tape_id: str,
+    *,
+    size_bytes: int = 100,
+    sha256: str = "",
+    tape_offset: int = 0,
+) -> Container:
     return Container(
         container_id=container_id,
         backup_set_id=_BACKUP_SET_ID,
         tape_id=tape_id,
         sequence_number=1,
-        tape_offset=0,
-        size_bytes=100,
+        tape_offset=tape_offset,
+        size_bytes=size_bytes,
+        sha256=sha256,
     )
 
 
@@ -251,6 +259,37 @@ class TestVerifyTapeLoadFailure:
 
     def test_other_tape_still_checked(self) -> None:
         assert _T2 in self.drive.load_calls
+
+
+class TestVerifyContainerChecksumMismatch:
+    def setup_method(self) -> None:
+        seg_data = b"segment payload"
+        corrupt_data = b"X" * len(seg_data)
+        good_hash = hashlib.sha256(seg_data).hexdigest()
+        container = _make_container(
+            "CNT-001", _T1, size_bytes=len(seg_data), sha256=good_hash
+        )
+        segment = _make_segment("seg-001", "CNT-001", seg_data)
+        td = _tape_data(b"catalog json", [("CNT-001", corrupt_data)])
+        svc, _ = _make_service({_T1: td})
+        catalog = Catalog(
+            schema_version="1.0",
+            backup_set_id=_BACKUP_SET_ID,
+            created_at=_CREATED_AT,
+            source_root="/src",
+            tapes=[_make_tape(_T1)],
+            containers=[container],
+            segments=[segment],
+        )
+        self.errors = svc.verify(catalog)
+
+    def test_reports_container_error(self) -> None:
+        assert any("container CNT-001" in e for e in self.errors)
+
+    def test_skips_segment_error_when_container_already_bad(self) -> None:
+        # Container-level failure should suppress per-segment errors for
+        # the same blob (every segment would otherwise mismatch too).
+        assert not any("seg-001" in e for e in self.errors)
 
 
 class TestVerifyLoadUnloadCalledPerTape:

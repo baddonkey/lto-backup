@@ -249,6 +249,7 @@ class BackupPlanner:
                 sequence_number=global_seq,
                 tape_offset=tape_offset,
                 size_bytes=container_size,
+                sha256="0" * 64,
             )
             containers.append(container)
             tape_offset += container_size

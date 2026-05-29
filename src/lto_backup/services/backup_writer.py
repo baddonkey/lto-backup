@@ -5,6 +5,7 @@ import logging
 from collections import defaultdict
 from collections.abc import Callable, Iterator
 from pathlib import Path
+from typing import Any
 
 _IO_CHUNK_SIZE = 4 << 20  # 4 MiB — maximum bytes per read_segment call
 
@@ -13,6 +14,7 @@ from lto_backup.domain.container import Container
 from lto_backup.domain.source_file import SourceFile
 from lto_backup.domain.tape_segment import TapeSegment
 from lto_backup.exceptions.backup_plan_error import BackupPlanError
+from lto_backup.exceptions.container_verification_error import ContainerVerificationError
 from lto_backup.exceptions.file_write_error import FileWriteError
 from lto_backup.exceptions.source_file_changed_error import SourceFileChangedError
 from lto_backup.exceptions.tape_full_error import TapeFullError
@@ -37,14 +39,22 @@ class BackupWriter:
         self._file_system = file_system
         self._file_hasher = file_hasher
 
-    def compute_sha256s(self, plan: BackupPlan) -> dict[str, str]:
-        """Read every source file and return a mapping of segment_id → slice SHA-256.
+    def compute_sha256s(
+        self, plan: BackupPlan
+    ) -> tuple[dict[str, str], dict[str, str]]:
+        """Read every source file and return ``(segment_map, container_map)``.
+
+        ``segment_map``  maps ``segment_id``  → SHA-256 hex of that segment's bytes.
+        ``container_map`` maps ``container_id`` → SHA-256 hex of the full container
+        payload as it will be written to tape (segment bytes + zero-padding for any
+        gaps and trailing space up to ``size_bytes``).
 
         Verifies the full-file SHA-256 against the scanned value and raises
-        SourceFileChangedError if any file has changed since planning.
+        :class:`SourceFileChangedError` if any file has changed since planning.
         No tape drive operations are performed.
         """
-        sha256_map: dict[str, str] = {}
+        segment_map: dict[str, str] = {}
+        container_map: dict[str, str] = {}
         verified_file_ids: set[str] = set()
 
         path_by_file_id: dict[str, Path] = {
@@ -54,36 +64,69 @@ class BackupWriter:
             sf.file_id: sf for sf in plan.source_files
         }
 
+        segments_by_container: dict[str, list[TapeSegment]] = defaultdict(list)
         for segment in plan.segments:
-            file_id = segment.file_id
-            file_path = path_by_file_id[file_id]
+            segments_by_container[segment.container_id].append(segment)
+        for cid in segments_by_container:
+            segments_by_container[cid].sort(key=lambda s: s.container_offset)
 
-            if file_id not in verified_file_ids:
-                actual_sha256 = self._file_hasher.hash_file(file_path)
-                source_file = source_file_by_id[file_id]
-                if actual_sha256 != source_file.sha256:
-                    raise SourceFileChangedError(
-                        f"File {file_id!r} has changed since planning: "
-                        f"expected sha256 {source_file.sha256!r}, "
-                        f"got {actual_sha256!r}."
+        for container in plan.containers:
+            container_digest = hashlib.sha256()
+            cursor = 0
+            for segment in segments_by_container.get(container.container_id, []):
+                file_id = segment.file_id
+                file_path = path_by_file_id[file_id]
+
+                if file_id not in verified_file_ids:
+                    actual_sha256 = self._file_hasher.hash_file(file_path)
+                    source_file = source_file_by_id[file_id]
+                    if actual_sha256 != source_file.sha256:
+                        raise SourceFileChangedError(
+                            f"File {file_id!r} has changed since planning: "
+                            f"expected sha256 {source_file.sha256!r}, "
+                            f"got {actual_sha256!r}."
+                        )
+                    verified_file_ids.add(file_id)
+
+                if segment.container_offset > cursor:
+                    self._update_with_zero_padding(
+                        container_digest, segment.container_offset - cursor
                     )
-                verified_file_ids.add(file_id)
+                    cursor = segment.container_offset
 
-            digest = hashlib.sha256()
-            src_offset = segment.source_offset
-            remaining = segment.length_bytes
-            while remaining > 0:
-                n = min(remaining, _IO_CHUNK_SIZE)
-                piece = self._file_system.read_segment(file_path, src_offset, n)
-                digest.update(piece)
-                src_offset += len(piece)
-                remaining -= len(piece)
-            sha256_map[segment.segment_id] = digest.hexdigest()
+                seg_digest = hashlib.sha256()
+                src_offset = segment.source_offset
+                remaining = segment.length_bytes
+                while remaining > 0:
+                    n = min(remaining, _IO_CHUNK_SIZE)
+                    piece = self._file_system.read_segment(file_path, src_offset, n)
+                    seg_digest.update(piece)
+                    container_digest.update(piece)
+                    src_offset += len(piece)
+                    remaining -= len(piece)
+                segment_map[segment.segment_id] = seg_digest.hexdigest()
+                cursor += segment.length_bytes
+
+            if cursor < container.size_bytes:
+                self._update_with_zero_padding(
+                    container_digest, container.size_bytes - cursor
+                )
+            container_map[container.container_id] = container_digest.hexdigest()
 
         logger.info(
-            "BackupWriter: pre-computed SHA-256s for %d segment(s).", len(sha256_map)
+            "BackupWriter: pre-computed SHA-256s for %d segment(s) and %d container(s).",
+            len(segment_map),
+            len(container_map),
         )
-        return sha256_map
+        return segment_map, container_map
+
+    @staticmethod
+    def _update_with_zero_padding(digest: Any, length: int) -> None:
+        remaining = length
+        while remaining > 0:
+            n = min(remaining, _IO_CHUNK_SIZE)
+            digest.update(bytes(n))
+            remaining -= n
 
     def write(
         self,
@@ -167,17 +210,24 @@ class BackupWriter:
                         container.container_id,
                         container.size_bytes,
                     )
+                    write_digest = hashlib.sha256()
                     try:
                         self._tape_drive.write_stream(
                             container.container_id,
                             container.size_bytes,
-                            self._container_chunks(container, segments, path_by_file_id),
+                            self._hashing_chunks(
+                                self._container_chunks(
+                                    container, segments, path_by_file_id
+                                ),
+                                write_digest,
+                            ),
                         )
                     except TapeFullError as exc:
                         raise FileWriteError(
                             f"Tape full while writing container {container.container_id!r}."
                         ) from exc
 
+                    self._verify_container_readback(container, write_digest.hexdigest())
                     bytes_written += container.size_bytes
 
                 if post_tape_callback is not None:
@@ -190,6 +240,43 @@ class BackupWriter:
                 tape.tape_id,
                 bytes_written,
             )
+
+    @staticmethod
+    def _hashing_chunks(
+        chunks: Iterator[bytes], digest: Any
+    ) -> Iterator[bytes]:
+        for chunk in chunks:
+            digest.update(chunk)
+            yield chunk
+
+    def _verify_container_readback(
+        self, container: Container, expected_sha256: str
+    ) -> None:
+        """Read the container back from the tape and verify its SHA-256."""
+        readback_digest = hashlib.sha256()
+        offset = 0
+        remaining = container.size_bytes
+        while remaining > 0:
+            n = min(remaining, _IO_CHUNK_SIZE)
+            piece = self._tape_drive.read_file_segment(
+                container.container_id, offset, n
+            )
+            if not piece:
+                break
+            readback_digest.update(piece)
+            offset += len(piece)
+            remaining -= len(piece)
+        actual = readback_digest.hexdigest()
+        if actual != expected_sha256:
+            raise ContainerVerificationError(
+                f"Container {container.container_id!r} read-back SHA-256 mismatch: "
+                f"expected {expected_sha256!r}, got {actual!r}."
+            )
+        logger.debug(
+            "BackupWriter: container %s verified via read-back (sha256=%s)",
+            container.container_id,
+            expected_sha256,
+        )
 
     def _container_chunks(
         self,

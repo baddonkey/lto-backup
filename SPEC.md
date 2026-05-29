@@ -25,7 +25,7 @@ The catalog must include:
 - Backup set ID
 - Source root
 - Tape list
-- Container list (with tape ID and tape offset per container)
+- Container list (with tape ID, tape offset, size in bytes, and SHA-256 per container)
 - Source file list
 - Segment list (with container ID, container offset, source offset, length, SHA-256)
 - Timestamps
@@ -122,7 +122,7 @@ Each backup run executes five stages:
 1. **Scan** — `SourceScanner` walks `source_root`, computes SHA-256 for every file, records size and `modified_at`.
 2. **Plan** — `BackupPlanner` uses the iterative packing algorithm to compute `reserved_catalog_bytes`, then packs source files into containers (≤ `max_container_size_bytes` each) and assigns containers to tapes. Files larger than one container are split across container boundaries. Segment `sha256` fields hold 64-char placeholders at planning time.
 3. **Hash** — `BackupWriter.compute_sha256s()` reads every source file, verifies the full-file SHA-256 against the scanned value (`SourceFileChangedError` if modified), and returns a `dict[segment_id, sha256]` of per-segment hashes. No tape I/O occurs.
-4. **Write** — `BackupWriter.write()` accepts a `post_tape_callback: Callable[[TapeDrive], None]`. For each tape it loads the tape, writes all containers (reading and verifying source files), then calls `post_tape_callback` with the still-loaded tape drive before unloading. Each physical tape is handled exactly once.
+4. **Write** — `BackupWriter.write()` accepts a `post_tape_callback: Callable[[TapeDrive], None]`. For each tape it loads the tape, writes all containers (reading and verifying source files), then calls `post_tape_callback` with the still-loaded tape drive before unloading. Each physical tape is handled exactly once. After each container is streamed to the tape, the writer reads it back via `TapeDrive.read_file_segment` and re-hashes the bytes; on mismatch it raises `ContainerVerificationError` and aborts the run.
 5. **Catalog** — `BackupService` passes `catalog_service.write_catalog_to_tape` as the callback. `CatalogService.build_catalog()` fills segment SHA-256s from step 3 via `dataclasses.replace`, serializes to JSON, and writes `catalog/catalog.json` + `catalog/catalog.sha256` to every tape during its single load in step 4.
 
 ---
@@ -135,7 +135,7 @@ Each backup run executes five stages:
 
 ## Verification
 
-`VerificationService.verify(catalog) -> list[str]` iterates every tape in the catalog, loads it, re-hashes `catalog/catalog.json` and compares against `catalog/catalog.sha256`, then for each container on that tape reads the container blob, slices out each segment's bytes, re-hashes them, and compares against `catalog.segments[*].sha256`. Returns a list of error strings; an empty list means all tapes are clean.
+`VerificationService.verify(catalog) -> list[str]` iterates every tape in the catalog, loads it, re-hashes `catalog/catalog.json` and compares against `catalog/catalog.sha256`, then for each container on that tape (processed in `tape_offset` order so the drive streams forward) it first reads the container blob and verifies its SHA-256 against `catalog.containers[*].sha256`. On a container-hash mismatch it records an error and skips the segment-level checks for that container; on a match it slices out each segment's bytes, re-hashes them, and compares against `catalog.segments[*].sha256`. Returns a list of error strings; an empty list means all tapes are clean.
 
 ---
 
