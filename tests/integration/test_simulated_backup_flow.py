@@ -94,7 +94,7 @@ class TestSimulatedBackupFlow:
         (source / "file.bin").write_bytes(b"x" * 100)
 
         catalog = build_backup_service(_config(source, tapes)).run(_config(source, tapes))
-        errors = _verifier(tapes).verify(catalog)
+        errors = _verifier(tapes).verify(catalog).errors
 
         assert errors == []
 
@@ -231,7 +231,7 @@ class TestSimulatedBackupFlow:
         for seg in catalog.segments:
             assert seg.sha256 != "", f"segment {seg.segment_id} has empty sha256"
 
-        errors = _verifier(tapes, capacity=10_000).verify(catalog)
+        errors = _verifier(tapes, capacity=10_000).verify(catalog).errors
         assert errors == []
 
     # ------------------------------------------------------------------
@@ -252,6 +252,6 @@ class TestSimulatedBackupFlow:
         container_id = next(c.container_id for c in catalog.containers if c.tape_id == tape_id)
         (tapes / tape_id / "data" / container_id).write_bytes(b"CORRUPTED DATA")
 
-        errors = _verifier(tapes).verify(catalog)
+        errors = _verifier(tapes).verify(catalog).errors
 
         assert len(errors) > 0

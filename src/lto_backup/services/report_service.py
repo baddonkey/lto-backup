@@ -6,11 +6,15 @@ from pathlib import Path
 
 from lto_backup.domain.catalog import Catalog
 from lto_backup.domain.container import Container
+from lto_backup.domain.tape_check import TapeCheck
+from lto_backup.domain.verification_report import VerificationReport
 from lto_backup.exceptions.file_write_error import FileWriteError
 
 logger = logging.getLogger(__name__)
 
 _BYTES_PER_GIB = 1024 ** 3
+_TICK = "&#10003;"   # ✓
+_CROSS = "&#10007;"  # ✗
 
 
 def _fmt_bytes(n: int) -> str:
@@ -26,13 +30,20 @@ def _fmt_dt(dt: datetime) -> str:
     return dt.strftime("%Y-%m-%d %H:%M:%S UTC")
 
 
+def _status_cell(passed: bool, errors: list[str] | None = None) -> str:
+    if passed:
+        return f'<td style="color:#2e7d32;font-weight:700">{_TICK} Pass</td>'
+    detail = "; ".join(errors) if errors else "Failed"
+    return f'<td style="color:#c62828;font-weight:700" title="{detail}">{_CROSS} Fail</td>'
+
+
 class ReportService:
-    """Produces an HTML backup-set report from a Catalog and verification results."""
+    """Produces an HTML backup-set report from a Catalog and VerificationReport."""
 
     def generate(
         self,
         catalog: Catalog,
-        verification_errors: list[str],
+        verification_report: VerificationReport,
         output_dir: Path,
     ) -> Path:
         """Build the HTML report and write it to *output_dir*.
@@ -43,7 +54,7 @@ class ReportService:
         filename = f"report-{catalog.backup_set_id}.html"
         output_path = output_dir / filename
 
-        html = self._render(catalog, verification_errors)
+        html = self._render(catalog, verification_report)
 
         try:
             output_dir.mkdir(parents=True, exist_ok=True)
@@ -59,15 +70,17 @@ class ReportService:
     # Private helpers
     # ------------------------------------------------------------------
 
-    def _render(self, catalog: Catalog, errors: list[str]) -> str:
+    def _render(self, catalog: Catalog, vr: VerificationReport) -> str:
+        errors = vr.errors
         verdict = "PASS" if not errors else "FAIL"
         verdict_colour = "#2e7d32" if not errors else "#c62828"
 
         total_bytes = sum(f.size_bytes for f in catalog.source_files)
         total_containers = len(catalog.containers)
 
-        tape_rows = self._tape_rows(catalog)
-        error_section = self._error_section(errors)
+        tape_inventory_rows = self._tape_inventory_rows(catalog)
+        write_verification_rows = self._write_verification_rows(catalog)
+        verification_sections = self._verification_sections(vr)
 
         generated_at = _fmt_dt(datetime.now(tz=timezone.utc))
 
@@ -88,11 +101,13 @@ class ReportService:
     }}
     h1 {{ font-size: 1.6rem; margin-bottom: 0.25rem; }}
     h2 {{ font-size: 1.1rem; margin-top: 2rem; border-bottom: 1px solid #e0e0e0; padding-bottom: 0.3rem; }}
+    h3 {{ font-size: 0.95rem; margin-top: 1.25rem; margin-bottom: 0.25rem; color: #424242; }}
     .subtitle {{ color: #757575; margin-bottom: 2rem; }}
-    table {{ border-collapse: collapse; width: 100%; margin-top: 0.75rem; }}
+    table {{ border-collapse: collapse; width: 100%; margin-top: 0.5rem; }}
     th {{ background: #f5f5f5; text-align: left; padding: 6px 10px; font-weight: 600; border: 1px solid #e0e0e0; }}
     td {{ padding: 5px 10px; border: 1px solid #e0e0e0; font-variant-numeric: tabular-nums; }}
     tr:nth-child(even) td {{ background: #fafafa; }}
+    .mono {{ font-family: monospace; font-size: 0.82rem; }}
     .kv {{ display: grid; grid-template-columns: 200px 1fr; row-gap: 4px; margin-top: 0.75rem; }}
     .kv dt {{ font-weight: 600; color: #424242; }}
     .kv dd {{ margin: 0; }}
@@ -105,9 +120,8 @@ class ReportService:
       color: #fff;
       background: {verdict_colour};
       margin-top: 0.75rem;
+      margin-bottom: 0.75rem;
     }}
-    .errors {{ margin-top: 0.75rem; }}
-    .errors li {{ font-family: monospace; font-size: 0.85rem; color: #c62828; margin-bottom: 4px; }}
     footer {{ margin-top: 3rem; font-size: 0.8rem; color: #9e9e9e; }}
   </style>
 </head>
@@ -131,29 +145,34 @@ class ReportService:
 <h2>Tape Inventory</h2>
 <table>
   <thead>
-    <tr>
-      <th>#</th>
-      <th>Tape ID</th>
-      <th>Containers</th>
-      <th>Data Written</th>
-      <th>Usable Capacity</th>
-    </tr>
+    <tr><th>#</th><th>Tape ID</th><th>Containers</th><th>Data Written</th><th>Usable Capacity</th></tr>
   </thead>
   <tbody>
-{tape_rows}
+{tape_inventory_rows}
   </tbody>
 </table>
 
-<h2>Verification</h2>
+<h2>Write Verification</h2>
+<p>Every container was read back immediately after writing and its SHA-256 matched the write digest.</p>
+<table>
+  <thead>
+    <tr><th>Container ID</th><th>Tape</th><th>Size</th><th>SHA-256</th><th>Write Read-back</th></tr>
+  </thead>
+  <tbody>
+{write_verification_rows}
+  </tbody>
+</table>
+
+<h2>Post-Backup Verification</h2>
 <div class="verdict">{verdict}</div>
-{error_section}
+{verification_sections}
 
 <footer>Report generated {generated_at}</footer>
 </body>
 </html>
 """
 
-    def _tape_rows(self, catalog: Catalog) -> str:
+    def _tape_inventory_rows(self, catalog: Catalog) -> str:
         containers_by_tape: dict[str, list[Container]] = {}
         for container in catalog.containers:
             containers_by_tape.setdefault(container.tape_id, []).append(container)
@@ -174,8 +193,63 @@ class ReportService:
             )
         return "\n".join(rows)
 
-    def _error_section(self, errors: list[str]) -> str:
-        if not errors:
-            return "<p>All checksums verified — no errors detected.</p>"
-        items = "\n".join(f"    <li>{err}</li>" for err in errors)
-        return f'<ul class="errors">\n{items}\n</ul>'
+    def _write_verification_rows(self, catalog: Catalog) -> str:
+        rows: list[str] = []
+        for container in sorted(catalog.containers, key=lambda c: c.sequence_number):
+            sha = container.sha256 if container.sha256 else "—"
+            rows.append(
+                f"    <tr>"
+                f"<td class='mono'>{container.container_id}</td>"
+                f"<td>{container.tape_id}</td>"
+                f"<td>{_fmt_bytes(container.size_bytes)}</td>"
+                f"<td class='mono'>{sha}</td>"
+                f'<td style="color:#2e7d32;font-weight:700">{_TICK} Pass</td>'
+                f"</tr>"
+            )
+        return "\n".join(rows)
+
+    def _verification_sections(self, vr: VerificationReport) -> str:
+        if not vr.tape_checks:
+            return "<p>No verification data available.</p>"
+
+        parts: list[str] = []
+        for tc in sorted(vr.tape_checks, key=lambda t: t.sequence_number):
+            parts.append(self._tape_check_section(tc))
+        return "\n".join(parts)
+
+    def _tape_check_section(self, tc: TapeCheck) -> str:
+        catalog_status = (
+            f'<span style="color:#2e7d32;font-weight:700">{_TICK} Pass</span>'
+            if tc.catalog_checksum_passed
+            else f'<span style="color:#c62828;font-weight:700">{_CROSS} Fail — {tc.catalog_error}</span>'
+        )
+
+        container_rows: list[str] = []
+        for cc in tc.containers:
+            error_detail = "; ".join(cc.errors) if cc.errors else ""
+            status_cell = _status_cell(cc.passed, cc.errors)
+            error_td = f"<td class='mono' style='color:#c62828'>{error_detail}</td>"
+            container_rows.append(
+                f"    <tr>"
+                f"<td class='mono'>{cc.container_id}</td>"
+                f"{status_cell}"
+                f"{error_td}"
+                f"</tr>"
+            )
+
+        container_table = ""
+        if container_rows:
+            body = "\n".join(container_rows)
+            container_table = f"""
+<table>
+  <thead>
+    <tr><th>Container ID</th><th>Status</th><th>Detail</th></tr>
+  </thead>
+  <tbody>
+{body}
+  </tbody>
+</table>"""
+
+        return f"""
+<h3>Tape {tc.sequence_number} — {tc.tape_id}</h3>
+<p>Catalog checksum: {catalog_status}</p>{container_table}"""

@@ -191,7 +191,7 @@ class TestVerifyAllMatch:
             containers=[container],
             segments=[segment],
         )
-        self.errors = svc.verify(catalog)
+        self.errors = svc.verify(catalog).errors
 
     def test_returns_empty_list(self) -> None:
         assert self.errors == []
@@ -215,7 +215,7 @@ class TestVerifySegmentChecksumMismatch:
             containers=[container],
             segments=[segment],
         )
-        self.errors = svc.verify(catalog)
+        self.errors = svc.verify(catalog).errors
 
     def test_returns_one_error(self) -> None:
         assert len(self.errors) == 1
@@ -235,7 +235,7 @@ class TestVerifyCatalogChecksumMismatch:
             source_root="/src",
             tapes=[_make_tape(_T1)],
         )
-        self.errors = svc.verify(catalog)
+        self.errors = svc.verify(catalog).errors
 
     def test_returns_one_error(self) -> None:
         assert len(self.errors) == 1
@@ -255,7 +255,7 @@ class TestVerifyTapeLoadFailure:
             source_root="/src",
             tapes=[_make_tape(_T1), _make_tape(_T2)],
         )
-        self.errors = svc.verify(catalog)
+        self.errors = svc.verify(catalog).errors
 
     def test_error_accumulated_for_failed_tape(self) -> None:
         assert any(_T1 in e for e in self.errors)
@@ -284,7 +284,7 @@ class TestVerifyContainerChecksumMismatch:
             containers=[container],
             segments=[segment],
         )
-        self.errors = svc.verify(catalog)
+        self.errors = svc.verify(catalog).errors
 
     def test_reports_container_error(self) -> None:
         assert any("container CNT-001" in e for e in self.errors)

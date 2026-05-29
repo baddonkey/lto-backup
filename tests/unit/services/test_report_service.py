@@ -7,8 +7,11 @@ import pytest
 
 from lto_backup.domain.catalog import Catalog
 from lto_backup.domain.container import Container
+from lto_backup.domain.container_check import ContainerCheck
 from lto_backup.domain.source_file import SourceFile
 from lto_backup.domain.tape import Tape
+from lto_backup.domain.tape_check import TapeCheck
+from lto_backup.domain.verification_report import VerificationReport
 from lto_backup.exceptions.file_write_error import FileWriteError
 from lto_backup.services.report_service import ReportService
 
@@ -67,12 +70,36 @@ def _make_catalog(
     )
 
 
+def _clean_vr(tape_id: str = _TAPE_ID, seq: int = 1) -> VerificationReport:
+    return VerificationReport(tape_checks=[
+        TapeCheck(
+            tape_id=tape_id,
+            sequence_number=seq,
+            catalog_checksum_passed=True,
+            catalog_error=None,
+            containers=[ContainerCheck(container_id=_CONTAINER_ID, passed=True)],
+        )
+    ])
+
+
+def _failing_vr(error_msg: str) -> VerificationReport:
+    return VerificationReport(tape_checks=[
+        TapeCheck(
+            tape_id=_TAPE_ID,
+            sequence_number=1,
+            catalog_checksum_passed=False,
+            catalog_error=error_msg,
+            containers=[],
+        )
+    ])
+
+
 class TestReportServiceGenerate:
     def test_creates_html_file_in_output_dir(self, tmp_path: Path) -> None:
         catalog = _make_catalog()
         svc = ReportService()
 
-        result = svc.generate(catalog, [], tmp_path)
+        result = svc.generate(catalog, _clean_vr(), tmp_path)
 
         assert result == tmp_path / f"report-{_SET_ID}.html"
         assert result.exists()
@@ -81,7 +108,7 @@ class TestReportServiceGenerate:
         output_dir = tmp_path / "reports" / "nested"
         catalog = _make_catalog()
 
-        ReportService().generate(catalog, [], output_dir)
+        ReportService().generate(catalog, _clean_vr(), output_dir)
 
         assert output_dir.is_dir()
 
@@ -92,15 +119,15 @@ class TestReportServiceGenerate:
         catalog = _make_catalog()
 
         with pytest.raises(FileWriteError):
-            ReportService().generate(catalog, [], bad_path)
+            ReportService().generate(catalog, _clean_vr(), bad_path)
 
 
 class TestReportServiceContent:
     def setup_method(self) -> None:
         self._svc = ReportService()
 
-    def _html(self, catalog: Catalog, errors: list[str] = []) -> str:
-        return self._svc._render(catalog, errors)
+    def _html(self, catalog: Catalog, vr: VerificationReport | None = None) -> str:
+        return self._svc._render(catalog, vr or _clean_vr())
 
     def test_contains_backup_set_id(self) -> None:
         html = self._html(_make_catalog())
@@ -118,20 +145,20 @@ class TestReportServiceContent:
         assert "/home/user/docs" in html
 
     def test_verdict_pass_when_no_errors(self) -> None:
-        html = self._html(_make_catalog(), errors=[])
+        html = self._html(_make_catalog(), _clean_vr())
 
         assert ">PASS<" in html
         assert ">FAIL<" not in html
 
     def test_verdict_fail_when_errors_present(self) -> None:
-        html = self._html(_make_catalog(), errors=["Tape X: checksum mismatch"])
+        html = self._html(_make_catalog(), _failing_vr("Tape X: checksum mismatch"))
 
         assert ">FAIL<" in html
         assert ">PASS<" not in html
 
     def test_error_message_appears_in_html(self) -> None:
         error_msg = "Tape TAPE-001: catalog checksum mismatch"
-        html = self._html(_make_catalog(), errors=[error_msg])
+        html = self._html(_make_catalog(), _failing_vr(error_msg))
 
         assert error_msg in html
 
@@ -152,16 +179,22 @@ class TestReportServiceContent:
             tapes=[tape1, tape2],
             containers=[cnt1, cnt2],
         )
+        vr = VerificationReport(tape_checks=[
+            TapeCheck(tape_id=tape1.tape_id, sequence_number=1,
+                      catalog_checksum_passed=True, catalog_error=None),
+            TapeCheck(tape_id=tape2.tape_id, sequence_number=2,
+                      catalog_checksum_passed=True, catalog_error=None),
+        ])
 
-        html = self._html(catalog)
+        html = self._html(catalog, vr)
 
         assert tape1.tape_id in html
         assert tape2.tape_id in html
 
-    def test_no_errors_message_shown_when_clean(self) -> None:
-        html = self._html(_make_catalog(), errors=[])
+    def test_no_errors_message_not_shown_with_detailed_sections(self) -> None:
+        html = self._html(_make_catalog(), _clean_vr())
 
-        assert "no errors detected" in html
+        assert "no errors detected" not in html
 
     def test_created_at_formatted(self) -> None:
         html = self._html(_make_catalog())
@@ -171,6 +204,42 @@ class TestReportServiceContent:
     def test_empty_catalog_renders_without_error(self) -> None:
         catalog = _make_catalog(tapes=[], containers=[], source_files=[])
 
-        html = self._html(catalog)
+        html = self._html(catalog, VerificationReport())
+
+        assert _SET_ID in html
+
+    def test_container_id_appears_in_write_section(self) -> None:
+        html = self._html(_make_catalog())
+
+        assert _CONTAINER_ID in html
+
+    def test_tape_check_section_appears_per_tape(self) -> None:
+        html = self._html(_make_catalog(), _clean_vr())
+
+        assert _TAPE_ID in html
+
+    def test_container_pass_shown_in_verification_section(self) -> None:
+        html = self._html(_make_catalog(), _clean_vr())
+
+        assert "Pass" in html
+
+    def test_container_fail_shown_in_verification_section(self) -> None:
+        vr = VerificationReport(tape_checks=[
+            TapeCheck(
+                tape_id=_TAPE_ID,
+                sequence_number=1,
+                catalog_checksum_passed=True,
+                catalog_error=None,
+                containers=[ContainerCheck(
+                    container_id=_CONTAINER_ID,
+                    passed=False,
+                    errors=["segment mismatch"],
+                )],
+            )
+        ])
+        html = self._html(_make_catalog(), vr)
+
+        assert "Fail" in html
+        assert "segment mismatch" in html
 
         assert _SET_ID in html

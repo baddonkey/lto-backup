@@ -128,17 +128,17 @@ def main() -> None:
                     device=Path(args.device),
                     mount_point=Path(args.mount_point),
                 )
-            errors = verifier.verify(catalog)
+            vr = verifier.verify(catalog)
         except BackupError as exc:
             logger.error("Verification failed: %s", exc)
             print(f"Verification error: {exc}", file=sys.stderr)
             sys.exit(1)
 
-        report_path = ReportService().generate(catalog, errors, report_dir)
+        report_path = ReportService().generate(catalog, vr, report_dir)
         print(f"Report written to {report_path}")
 
-        if errors:
-            for err in errors:
+        if vr.errors:
+            for err in vr.errors:
                 print(f"CORRUPT: {err}", file=sys.stderr)
             sys.exit(1)
 
