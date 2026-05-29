@@ -189,7 +189,7 @@ Required system tools: `ltfs`, `umount`, `mt` (on `$PATH`). Tape must be pre-for
 | Field | Effect |
 |---|---|
 | `fail_on_write` | Raise `FileWriteError` on every write |
-| `fail_on_read` | Raise `FileWriteError` on every read |
+| `fail_on_read` | Raise `FileReadError` on every read |
 | `fail_on_load` | Raise `TapeNotLoadedError` on every load |
 | `fail_after_bytes_written` | Raise `TapeFullError` after N bytes written |
 | `failed_tape_ids` | Restrict injection to specific tape IDs |

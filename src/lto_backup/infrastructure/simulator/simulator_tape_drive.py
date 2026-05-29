@@ -2,6 +2,7 @@ import logging
 from collections.abc import Iterator
 from pathlib import Path
 
+from lto_backup.exceptions.file_read_error import FileReadError
 from lto_backup.exceptions.tape_full_error import TapeFullError
 from lto_backup.exceptions.tape_not_loaded_error import TapeNotLoadedError
 from lto_backup.infrastructure.simulator.simulator_failure_config import SimulatorFailureConfig
@@ -148,7 +149,7 @@ class SimulatorTapeDrive:
         tape = self._require_tape()
         if self._failure_config.fail_on_read:
             logger.error("Read of %s rejected by failure injection on tape %s", name, tape.tape_id)
-            raise OSError(self._failure_config.error_message)
+            raise FileReadError(self._failure_config.error_message)
         data = tape.read(name)
         logger.debug("Read %d bytes from %s on tape %s", len(data), name, tape.tape_id)
         return data
@@ -157,7 +158,7 @@ class SimulatorTapeDrive:
         tape = self._require_tape()
         if self._failure_config.fail_on_read:
             logger.error("Read of %s rejected by failure injection on tape %s", name, tape.tape_id)
-            raise OSError(self._failure_config.error_message)
+            raise FileReadError(self._failure_config.error_message)
         data = tape.read_segment(name, offset, length)
         logger.debug(
             "Read %d bytes at offset %d from %s on tape %s",

@@ -196,7 +196,7 @@ To restore a file: look up its segments in the catalog → for each segment, loa
 | Field | Type | Description |
 |---|---|---|
 | `fail_on_write` | `bool` | Raise `FileWriteError` on every write |
-| `fail_on_read` | `bool` | Raise `FileWriteError` on every read |
+| `fail_on_read` | `bool` | Raise `FileReadError` on every read |
 | `fail_on_load` | `bool` | Raise `TapeNotLoadedError` on every load |
 | `fail_after_bytes_written` | `int \| None` | Raise `TapeFullError` after N bytes written |
 | `failed_tape_ids` | `set[str]` | Only inject failures for these tape IDs |
