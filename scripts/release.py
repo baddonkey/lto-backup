@@ -65,6 +65,29 @@ def git_current_branch() -> str:
     return result.stdout.strip()
 
 
+def git_log_since_tag(previous_tag: str, new_tag: str) -> str:
+    """Return a Markdown bullet list of commits between two tags."""
+    result = subprocess.run(
+        ["git", "log", f"{previous_tag}..{new_tag}", "--oneline", "--no-merges"],
+        check=True, text=True, capture_output=True,
+    )
+    lines = result.stdout.strip().splitlines()
+    bullets = []
+    for line in lines:
+        sha, _, message = line.partition(" ")
+        bullets.append(f"- {message} ({sha})")
+    return "\n".join(bullets)
+
+
+def previous_tag() -> str:
+    """Return the most recent tag reachable from HEAD (before the new one)."""
+    result = subprocess.run(
+        ["git", "describe", "--tags", "--abbrev=0", "HEAD^"],
+        check=False, text=True, capture_output=True,
+    )
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument(
@@ -131,13 +154,20 @@ def main() -> None:
 
     # 5. GitHub release
     print("[5/5] Creating GitHub release")
+    prev = previous_tag()
+    auto_notes = ""
+    if prev:
+        commits = git_log_since_tag(prev, tag)
+        if commits:
+            auto_notes = f"## What's Changed\n\n{commits}\n\n**Full Changelog**: https://github.com/baddonkey/lto-backup/compare/{prev}...{tag}"
     gh_cmd = [
         "gh", "release", "create", tag,
         "--title", f"lto-backup {new_version}",
         "--generate-notes",
     ]
-    if args.notes:
-        gh_cmd += ["--notes", args.notes]
+    combined_notes = "\n\n".join(filter(None, [auto_notes, args.notes]))
+    if combined_notes:
+        gh_cmd += ["--notes", combined_notes]
     if args.draft:
         gh_cmd.append("--draft")
     result = run(gh_cmd)
