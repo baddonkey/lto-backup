@@ -717,3 +717,113 @@ class TestRestoreContainerHashVerification:
         assert report.errors == []
         # A result is still recorded, but sha256_passed is True (no hash to check)
         assert report.container_results[0].sha256_passed is True
+
+
+class TestRestoreFullFileHashMismatch:
+    """Full-file SHA-256 mismatch populates hash_failures."""
+
+    def setup_method(self) -> None:
+        actual_data = b"data that ends up on disk"
+        # Source file records a wrong hash — segment hash matches tape so segment
+        # passes, but full-file verification will fail.
+        sf = SourceFile(
+            file_id="f1",
+            relative_path="doc.txt",
+            absolute_path="/src/doc.txt",
+            size_bytes=len(actual_data),
+            sha256="a" * 64,  # wrong hash
+            modified_at=_CREATED_AT,
+        )
+        seg = TapeSegment(
+            segment_id="seg-001",
+            file_id="f1",
+            container_id="CNT-001",
+            container_offset=0,
+            source_offset=0,
+            length_bytes=len(actual_data),
+            sha256=_sha256(actual_data),  # segment hash matches tape data
+        )
+        container = _make_container("CNT-001", _T1, size_bytes=len(actual_data))
+        catalog = Catalog(
+            schema_version="1.0",
+            backup_set_id=_BACKUP_SET_ID,
+            created_at=_CREATED_AT,
+            source_root="/src",
+            tapes=[_make_tape(_T1)],
+            containers=[container],
+            source_files=[sf],
+            segments=[seg],
+        )
+        fs = FakeFileSystem()
+        svc, _, self.fs = _build_service({_T1: {"CNT-001": actual_data}}, fs=fs)
+        self.report = svc.restore(catalog, restore_root=Path("/out"))
+
+    def test_file_in_hash_failures(self) -> None:
+        assert "doc.txt" in self.report.hash_failures
+
+    def test_file_also_in_failed_paths(self) -> None:
+        assert "doc.txt" in self.report.failed_paths
+
+    def test_files_restored_is_zero(self) -> None:
+        assert self.report.files_restored == 0
+
+
+class TestRestoreNoHashFailuresOnSuccess:
+    """hash_failures is empty when all files restore cleanly."""
+
+    def test_hash_failures_empty(self) -> None:
+        data = b"good data"
+        sf = _make_source_file("f1", "ok.txt", data)
+        seg = _make_segment("seg-001", "f1", "CNT-001", data)
+        container = _make_container("CNT-001", _T1, size_bytes=len(data))
+        catalog = Catalog(
+            schema_version="1.0",
+            backup_set_id=_BACKUP_SET_ID,
+            created_at=_CREATED_AT,
+            source_root="/src",
+            tapes=[_make_tape(_T1)],
+            containers=[container],
+            source_files=[sf],
+            segments=[seg],
+        )
+        fs = FakeFileSystem()
+        svc, _, _ = _build_service({_T1: {"CNT-001": data}}, fs=fs)
+        report = svc.restore(catalog, restore_root=Path("/out"))
+
+        assert report.hash_failures == []
+
+
+class TestRestoreSegmentErrorNotInHashFailures:
+    """A file failing at segment level must not appear in hash_failures."""
+
+    def test_segment_error_file_absent_from_hash_failures(self) -> None:
+        good_data = b"good file"
+        corrupt_stored = b"XXXX"
+
+        sf_bad = _make_source_file("f1", "bad.txt", good_data)
+        bad_seg = TapeSegment(
+            segment_id="seg-bad",
+            file_id="f1",
+            container_id="CNT-001",
+            container_offset=0,
+            source_offset=0,
+            length_bytes=len(corrupt_stored),
+            sha256=_sha256(good_data),  # hash mismatch at segment level
+        )
+        container = _make_container("CNT-001", _T1)
+        catalog = Catalog(
+            schema_version="1.0",
+            backup_set_id=_BACKUP_SET_ID,
+            created_at=_CREATED_AT,
+            source_root="/src",
+            tapes=[_make_tape(_T1)],
+            containers=[container],
+            source_files=[sf_bad],
+            segments=[bad_seg],
+        )
+        fs = FakeFileSystem()
+        svc, _, _ = _build_service({_T1: {"CNT-001": corrupt_stored}}, fs=fs)
+        report = svc.restore(catalog, restore_root=Path("/out"))
+
+        assert report.hash_failures == []
+        assert "bad.txt" in report.failed_paths

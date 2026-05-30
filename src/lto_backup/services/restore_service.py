@@ -130,6 +130,7 @@ class RestoreService:
         all_errors: list[str] = []
         files_with_segment_errors: set[str] = set()
         failed_paths: list[str] = []
+        hash_failures: list[str] = []
         container_results: list[ContainerRestoreResult] = []
 
         # Process one tape at a time, in sequence_number order.
@@ -223,6 +224,7 @@ class RestoreService:
                 logger.warning(msg)
                 all_errors.append(msg)
                 failed_paths.append(sf.relative_path)
+                hash_failures.append(sf.relative_path)
                 continue
             files_restored += 1
 
@@ -238,6 +240,7 @@ class RestoreService:
             errors=all_errors,
             failed_paths=failed_paths,
             container_results=container_results,
+            hash_failures=hash_failures,
         )
 
     def _restore_from_tape(

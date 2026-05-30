@@ -12,3 +12,4 @@ class RestoreReport:
     errors: list[str] = field(default_factory=list)
     failed_paths: list[str] = field(default_factory=list)
     container_results: list[ContainerRestoreResult] = field(default_factory=list)
+    hash_failures: list[str] = field(default_factory=list)

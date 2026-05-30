@@ -469,3 +469,96 @@ class TestRestoreReportDetailLevelGenerateFlag:
         )
 
         assert "File Status" in path.read_text(encoding="utf-8")
+
+
+class TestRestoreReportFileSizeInBytes:
+    """Sizes are displayed as raw bytes."""
+
+    def setup_method(self) -> None:
+        self._svc = RestoreReportService()
+
+    def _html(self, detail_level: str = DETAIL_FILE) -> str:
+        return self._svc._render(
+            _make_catalog(), _clean_report(), _RESTORE_ROOT, None, detail_level
+        )
+
+    def test_file_size_shown_in_bytes(self) -> None:
+        # Default source file size is 512_000 bytes → "512,000 B"
+        html = self._html(DETAIL_FILE)
+
+        assert "512,000 B" in html
+
+    def test_container_size_shown_in_bytes(self) -> None:
+        # Default container size is 1_000_000 bytes → "1,000,000 B"
+        rr = RestoreReport(
+            files_requested=1,
+            files_restored=1,
+            container_results=[_make_container_result()],
+        )
+        html = self._svc._render(
+            _make_catalog(), rr, _RESTORE_ROOT, None, DETAIL_CONTAINER
+        )
+
+        assert "1,000,000 B" in html
+
+
+class TestRestoreReportSha256Column:
+    """SHA-256 column in file detail section."""
+
+    def setup_method(self) -> None:
+        self._svc = RestoreReportService()
+
+    def _html(self, rr: RestoreReport | None = None) -> str:
+        return self._svc._render(
+            _make_catalog(), rr or _clean_report(), _RESTORE_ROOT, None, DETAIL_FILE
+        )
+
+    def test_sha256_column_header_present(self) -> None:
+        html = self._html(_clean_report())
+
+        assert "SHA-256" in html
+
+    def test_sha256_pass_for_restored_file(self) -> None:
+        html = self._html(_clean_report())
+
+        assert "Pass" in html
+
+    def test_sha256_fail_for_hash_failure(self) -> None:
+        rr = RestoreReport(
+            files_requested=1,
+            files_restored=0,
+            errors=["docs/report.pdf: full-file SHA-256 mismatch"],
+            failed_paths=["docs/report.pdf"],
+            hash_failures=["docs/report.pdf"],
+        )
+
+        html = self._html(rr)
+
+        # The SHA-256 cell should show Fail (in addition to status Failed)
+        assert html.count("Fail") >= 2
+
+    def test_sha256_na_for_segment_error(self) -> None:
+        rr = RestoreReport(
+            files_requested=1,
+            files_restored=0,
+            errors=["segment checksum mismatch"],
+            failed_paths=["docs/report.pdf"],
+            hash_failures=[],  # failed before hash check
+        )
+
+        html = self._html(rr)
+
+        assert "N/A" in html
+
+    def test_sha256_column_not_present_in_container_mode(self) -> None:
+        rr = RestoreReport(
+            files_requested=1,
+            files_restored=1,
+            container_results=[_make_container_result()],
+        )
+        html = self._svc._render(
+            _make_catalog(), rr, _RESTORE_ROOT, None, DETAIL_CONTAINER
+        )
+
+        # File Status table (with its SHA-256 column) is absent in container mode
+        assert "<h2>File Status</h2>" not in html

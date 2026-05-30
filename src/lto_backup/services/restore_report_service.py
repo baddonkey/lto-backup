@@ -14,7 +14,6 @@ from lto_backup.exceptions.file_write_error import FileWriteError
 
 logger = logging.getLogger(__name__)
 
-_BYTES_PER_GIB = 1024 ** 3
 _TICK = "&#10003;"   # ✓
 _CROSS = "&#10007;"  # ✗
 
@@ -23,10 +22,7 @@ DETAIL_FILE = "file"
 
 
 def _fmt_bytes(n: int) -> str:
-    if n >= _BYTES_PER_GIB:
-        return f"{n / _BYTES_PER_GIB:.2f} GiB"
-    mib = n / (1024 ** 2)
-    return f"{mib:.2f} MiB"
+    return f"{n:,} B"
 
 
 def _fmt_dt(dt: datetime) -> str:
@@ -305,6 +301,7 @@ class RestoreReportService:
         rr: RestoreReport,
     ) -> str:
         failed_set = set(rr.failed_paths)
+        hash_failure_set = set(rr.hash_failures)
         rows: list[str] = []
         for sf in sorted(requested_files, key=lambda f: f.relative_path):
             failed = sf.relative_path in failed_set
@@ -318,18 +315,25 @@ class RestoreReportService:
                     f'<td style="color:#2e7d32;font-weight:700">'
                     f"{_TICK} Restored</td>"
                 )
+            if sf.relative_path in hash_failure_set:
+                sha_td = f'<td style="color:#c62828;font-weight:700">{_CROSS} Fail</td>'
+            elif sf.relative_path in failed_set:
+                sha_td = "<td>N/A</td>"
+            else:
+                sha_td = f'<td style="color:#2e7d32;font-weight:700">{_TICK} Pass</td>'
             rows.append(
                 f"    <tr>"
                 f"<td class='mono'>{sf.relative_path}</td>"
                 f"<td>{_fmt_bytes(sf.size_bytes)}</td>"
                 f"{status_td}"
+                f"{sha_td}"
                 f"</tr>"
             )
         body = "\n".join(rows)
         return f"""<h2>File Status</h2>
 <table>
   <thead>
-    <tr><th>Path</th><th>Size</th><th>Status</th></tr>
+    <tr><th>Path</th><th>Size</th><th>Status</th><th>SHA-256</th></tr>
   </thead>
   <tbody>
 {body}
