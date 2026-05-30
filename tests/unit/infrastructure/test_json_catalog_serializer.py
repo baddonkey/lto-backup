@@ -125,3 +125,44 @@ class TestJsonCatalogSerializer:
         data = self.serializer.serialize(catalog)
         restored = self.serializer.deserialize(data)
         assert restored == catalog
+
+    def test_round_trip_preserves_unix_mode(self) -> None:
+        import json
+
+        catalog = _make_catalog()
+        # Rebuild with a SourceFile that has unix_mode set
+        sf_with_mode = SourceFile(
+            file_id="FILE-001",
+            relative_path="records/case-001/video.bin",
+            absolute_path="/data/records/case-001/video.bin",
+            size_bytes=1_073_741_824,
+            sha256="abc123",
+            modified_at=datetime(2026, 1, 15, 10, 30, 0, tzinfo=UTC),
+            unix_mode=0o755,
+        )
+        catalog_with_mode = Catalog(
+            schema_version=catalog.schema_version,
+            backup_set_id=catalog.backup_set_id,
+            created_at=catalog.created_at,
+            source_root=catalog.source_root,
+            tapes=catalog.tapes,
+            source_files=[sf_with_mode],
+            segments=catalog.segments,
+        )
+        data = self.serializer.serialize(catalog_with_mode)
+        restored = self.serializer.deserialize(data)
+
+        assert restored.source_files[0].unix_mode == 0o755
+
+    def test_deserialize_without_unix_mode_defaults_to_none(self) -> None:
+        import json
+
+        catalog = _make_catalog()
+        data = self.serializer.serialize(catalog)
+        raw = json.loads(data)
+        # Strip unix_mode from all source files to simulate an old catalog
+        for sf in raw.get("source_files", []):
+            sf.pop("unix_mode", None)
+        restored = self.serializer.deserialize(json.dumps(raw).encode())
+
+        assert restored.source_files[0].unix_mode is None

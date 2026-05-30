@@ -227,6 +227,12 @@ class RestoreService:
                 hash_failures.append(sf.relative_path)
                 continue
             files_restored += 1
+            try:
+                self._file_system.set_attributes(
+                    dest, sf.modified_at.timestamp(), sf.unix_mode
+                )
+            except OSError as exc:
+                logger.warning("Cannot set attributes on %s: %s", dest, exc)
 
         logger.info(
             "Restore complete: requested=%d restored=%d errors=%d",

@@ -114,8 +114,16 @@ class FakeFileSystem:
     def modified_at_timestamp(self, path: Path) -> float:
         return 0.0
 
+    def file_mode(self, path: Path) -> int:
+        return 0o644
+
     def read_segment(self, path: Path, offset: int, length: int) -> bytes:
         return self._files[path][offset : offset + length]
+
+    def set_attributes(
+        self, path: Path, mtime_timestamp: float, unix_mode: int | None
+    ) -> None:
+        pass
 
 
 class FakeFileHasher:

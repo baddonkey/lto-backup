@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 
 
@@ -10,3 +10,4 @@ class SourceFile:
     size_bytes: int
     sha256: str
     modified_at: datetime
+    unix_mode: int | None = field(default=None)

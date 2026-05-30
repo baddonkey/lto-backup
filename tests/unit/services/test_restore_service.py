@@ -85,6 +85,7 @@ class FakeFileSystem:
 
     def __init__(self) -> None:
         self._buffers: dict[str, bytearray] = {}
+        self._attribute_calls: list[tuple[Path, float, int | None]] = []
 
     def list_files(self, root: Path) -> list[Path]:
         return []
@@ -94,6 +95,9 @@ class FakeFileSystem:
 
     def modified_at_timestamp(self, path: Path) -> float:
         return 0.0
+
+    def file_mode(self, path: Path) -> int:
+        return 0o644
 
     def read_segment(self, path: Path, offset: int, length: int) -> bytes:
         buf = self._buffers.get(str(path), bytearray())
@@ -109,6 +113,14 @@ class FakeFileSystem:
         if len(buf) < end:
             buf.extend(b"\x00" * (end - len(buf)))
         buf[offset : end] = data
+
+    def set_attributes(
+        self, path: Path, mtime_timestamp: float, unix_mode: int | None
+    ) -> None:
+        self._attribute_calls.append((path, mtime_timestamp, unix_mode))
+
+    def get_attribute_calls(self) -> list[tuple[Path, float, int | None]]:
+        return list(self._attribute_calls)
 
     def get_file_bytes(self, path: Path) -> bytes:
         return bytes(self._buffers.get(str(path), bytearray()))
@@ -827,3 +839,110 @@ class TestRestoreSegmentErrorNotInHashFailures:
 
         assert report.hash_failures == []
         assert "bad.txt" in report.failed_paths
+
+
+# ---------------------------------------------------------------------------
+# File attribute preservation tests
+# ---------------------------------------------------------------------------
+
+_KNOWN_MTIME = 1_748_692_800.0  # 2025-05-31 12:00:00 UTC (arbitrary fixed stamp)
+
+
+def _make_source_file_with_attrs(
+    file_id: str,
+    relative_path: str,
+    data: bytes,
+    unix_mode: int | None = 0o644,
+) -> SourceFile:
+    from datetime import UTC
+
+    return SourceFile(
+        file_id=file_id,
+        relative_path=relative_path,
+        absolute_path=f"/src/{relative_path}",
+        size_bytes=len(data),
+        sha256=_sha256(data),
+        modified_at=datetime.fromtimestamp(_KNOWN_MTIME, tz=UTC),
+        unix_mode=unix_mode,
+    )
+
+
+class TestRestoreFileAttributePreservation:
+    """set_attributes is called with the correct arguments after a successful restore."""
+
+    def setup_method(self) -> None:
+        self.file_data = b"attribute test content"
+        sf = _make_source_file_with_attrs("f1", "docs/note.txt", self.file_data, unix_mode=0o644)
+        container = _make_container("CNT-001", _T1)
+        seg = _make_segment("seg-001", "f1", "CNT-001", self.file_data)
+        catalog = Catalog(
+            schema_version="1.0",
+            backup_set_id=_BACKUP_SET_ID,
+            created_at=_CREATED_AT,
+            source_root="/src",
+            tapes=[_make_tape(_T1)],
+            containers=[container],
+            source_files=[sf],
+            segments=[seg],
+        )
+        self.fs = FakeFileSystem()
+        svc, _, _ = _build_service({_T1: {"CNT-001": self.file_data}}, fs=self.fs)
+        svc.restore(catalog, restore_root=Path("/out"))
+        self.dest = Path("/out") / "docs/note.txt"
+
+    def test_set_attributes_called_once(self) -> None:
+        assert len(self.fs.get_attribute_calls()) == 1
+
+    def test_set_attributes_called_with_correct_path(self) -> None:
+        path, _, _ = self.fs.get_attribute_calls()[0]
+        assert path == self.dest
+
+    def test_set_attributes_called_with_correct_mtime(self) -> None:
+        _, mtime, _ = self.fs.get_attribute_calls()[0]
+        assert mtime == _KNOWN_MTIME
+
+    def test_set_attributes_called_with_correct_mode(self) -> None:
+        _, _, mode = self.fs.get_attribute_calls()[0]
+        assert mode == 0o644
+
+
+class TestRestoreAttributesNotSetOnFailure:
+    """set_attributes must NOT be called when the file fails hash verification."""
+
+    def test_set_attributes_not_called_on_hash_failure(self) -> None:
+        actual_data = b"hash failure content"
+        # SourceFile stores a wrong hash so full-file check fails.
+        sf = SourceFile(
+            file_id="f1",
+            relative_path="bad.txt",
+            absolute_path="/src/bad.txt",
+            size_bytes=len(actual_data),
+            sha256="a" * 64,  # deliberately wrong
+            modified_at=_CREATED_AT,
+            unix_mode=0o644,
+        )
+        seg = TapeSegment(
+            segment_id="seg-001",
+            file_id="f1",
+            container_id="CNT-001",
+            container_offset=0,
+            source_offset=0,
+            length_bytes=len(actual_data),
+            sha256=_sha256(actual_data),
+        )
+        container = _make_container("CNT-001", _T1, size_bytes=len(actual_data))
+        catalog = Catalog(
+            schema_version="1.0",
+            backup_set_id=_BACKUP_SET_ID,
+            created_at=_CREATED_AT,
+            source_root="/src",
+            tapes=[_make_tape(_T1)],
+            containers=[container],
+            source_files=[sf],
+            segments=[seg],
+        )
+        fs = FakeFileSystem()
+        svc, _, _ = _build_service({_T1: {"CNT-001": actual_data}}, fs=fs)
+        svc.restore(catalog, restore_root=Path("/out"))
+
+        assert fs.get_attribute_calls() == []

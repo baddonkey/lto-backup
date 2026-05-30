@@ -55,6 +55,19 @@ class TestRetryFileSystemDelegation:
 
         self._inner.write_segment.assert_called_once_with(_PATH, 0, _DATA)  # type: ignore[attr-defined]
 
+    def test_file_mode_delegates(self) -> None:
+        self._inner.file_mode.return_value = 0o755  # type: ignore[attr-defined]
+
+        result = self._svc.file_mode(_PATH)
+
+        self._inner.file_mode.assert_called_once_with(_PATH)  # type: ignore[attr-defined]
+        assert result == 0o755
+
+    def test_set_attributes_delegates(self) -> None:
+        self._svc.set_attributes(_PATH, 1.0, 0o644)
+
+        self._inner.set_attributes.assert_called_once_with(_PATH, 1.0, 0o644)  # type: ignore[attr-defined]
+
 
 class TestRetryFileSystemReadSegmentSuccess:
     """read_segment succeeds on first attempt — no retry needed."""

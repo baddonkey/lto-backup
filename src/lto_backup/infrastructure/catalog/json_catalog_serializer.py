@@ -111,6 +111,7 @@ class JsonCatalogSerializer:
             "size_bytes": sf.size_bytes,
             "sha256": sf.sha256,
             "modified_at": sf.modified_at.isoformat(),
+            "unix_mode": sf.unix_mode,
         }
 
     @staticmethod
@@ -153,6 +154,7 @@ class JsonCatalogSerializer:
 
     @staticmethod
     def _source_file_from_dict(d: dict[str, Any]) -> SourceFile:
+        raw_mode = d.get("unix_mode")
         return SourceFile(
             file_id=str(d["file_id"]),
             relative_path=str(d["relative_path"]),
@@ -160,6 +162,7 @@ class JsonCatalogSerializer:
             size_bytes=int(d["size_bytes"]),
             sha256=str(d["sha256"]),
             modified_at=datetime.fromisoformat(str(d["modified_at"])),
+            unix_mode=int(raw_mode) if raw_mode is not None else None,
         )
 
     @staticmethod

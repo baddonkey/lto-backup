@@ -38,11 +38,19 @@ class RetryFileSystem:
     def file_size(self, path: Path) -> int:
         return self._inner.file_size(path)
 
+    def file_mode(self, path: Path) -> int:
+        return self._inner.file_mode(path)
+
     def modified_at_timestamp(self, path: Path) -> float:
         return self._inner.modified_at_timestamp(path)
 
     def write_segment(self, path: Path, offset: int, data: bytes) -> None:
         self._inner.write_segment(path, offset, data)
+
+    def set_attributes(
+        self, path: Path, mtime_timestamp: float, unix_mode: int | None
+    ) -> None:
+        self._inner.set_attributes(path, mtime_timestamp, unix_mode)
 
     # ------------------------------------------------------------------
     # Read with retry

@@ -43,6 +43,7 @@ class SourceScanner:
             size = self._fs.file_size(absolute_path)
             sha256 = self._hasher.hash_file(absolute_path)
             ts = self._fs.modified_at_timestamp(absolute_path)
+            mode = self._fs.file_mode(absolute_path)
             modified_at = datetime.fromtimestamp(ts, tz=UTC)
 
             source_file = SourceFile(
@@ -52,6 +53,7 @@ class SourceScanner:
                 size_bytes=size,
                 sha256=sha256,
                 modified_at=modified_at,
+                unix_mode=mode,
             )
             logger.debug("Scanned file: %s", source_file)
             results.append(source_file)

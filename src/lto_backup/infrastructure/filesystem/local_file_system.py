@@ -1,4 +1,6 @@
 import logging
+import os
+import stat as _stat
 from pathlib import Path
 
 from lto_backup.exceptions.file_write_error import FileWriteError
@@ -19,6 +21,9 @@ class LocalFileSystem:
         size = path.stat().st_size
         logger.debug("File size %s: %d bytes", path, size)
         return size
+
+    def file_mode(self, path: Path) -> int:
+        return path.stat().st_mode
 
     def modified_at_timestamp(self, path: Path) -> float:
         return path.stat().st_mtime
@@ -46,3 +51,10 @@ class LocalFileSystem:
             logger.error("Failed to write to %s: %s", path, exc)
             raise FileWriteError(f"Cannot write to {path}: {exc}") from exc
         logger.debug("Wrote %d bytes to %s at offset %d", len(data), path, offset)
+
+    def set_attributes(
+        self, path: Path, mtime_timestamp: float, unix_mode: int | None
+    ) -> None:
+        os.utime(path, (mtime_timestamp, mtime_timestamp))
+        if unix_mode is not None:
+            os.chmod(path, _stat.S_IMODE(unix_mode))

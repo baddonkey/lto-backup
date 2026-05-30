@@ -30,8 +30,16 @@ class FakeFileSystem:
     def modified_at_timestamp(self, path: Path) -> float:
         return self._files[path][1]
 
+    def file_mode(self, path: Path) -> int:
+        return 0o644
+
     def read_segment(self, path: Path, offset: int, length: int) -> bytes:
         return b""
+
+    def set_attributes(
+        self, path: Path, mtime_timestamp: float, unix_mode: int | None
+    ) -> None:
+        pass
 
 
 class FakeFileHasher:
@@ -188,3 +196,14 @@ class TestSourceScanner:
             scanner.scan(Path("/nonexistent/root"))
 
         assert exc_info.value.__cause__ is original
+
+    def test_scan_unix_mode_is_captured(self) -> None:
+        path = _SOURCE_ROOT / "file.txt"
+        scanner = self._make_scanner(
+            {path: (10, _MTIME)},
+            {path: "hash"},
+        )
+
+        result = scanner.scan(_SOURCE_ROOT)
+
+        assert result[0].unix_mode == 0o644
