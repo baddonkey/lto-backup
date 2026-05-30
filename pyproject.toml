@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "lto-backup"
-version = "0.2.1"
+version = "1.0.0"
 description = "File-based records management system backup application for LTO tapes"
 requires-python = ">=3.12"
 dependencies = []
