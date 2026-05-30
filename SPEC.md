@@ -121,8 +121,11 @@ All planned work is complete.
 | 7 | `TapeSwitchService` | ✓ done |
 | 8 | `LinuxLtoTapeDrive` (LTFS) | ✓ done |
 | 9 | `wiring/container.py` (DI composition root) | ✓ done |
-| 10 | CLI with `--simulator` / `--device` flag | ✓ done |
+| 10 | CLI `lto-backup` with `--simulator` / `--device` flag | ✓ done |
 | 11 | Simulator integration test (backup → verify) | ✓ done |
+| 12 | `RestoreService` | ✓ done |
+| 13 | CLI `lto-restore` with `--simulator` / `--device` flag | ✓ done |
+| 14 | Simulator integration test (backup → restore) | ✓ done |
 
 ---
 
@@ -149,6 +152,36 @@ After a successful load it calls `TapeDrive.read_tape_id()` and compares the rec
 ## Verification
 
 `VerificationService.verify(catalog) -> list[str]` iterates every tape in the catalog, loads it, re-hashes `catalog/catalog.json` and compares against `catalog/catalog.sha256`, then for each container on that tape (processed in `tape_offset` order so the drive streams forward) it first reads the container blob and verifies its SHA-256 against `catalog.containers[*].sha256`. On a container-hash mismatch it records an error and skips the segment-level checks for that container; on a match it slices out each segment's bytes, re-hashes them, and compares against `catalog.segments[*].sha256`. Returns a list of error strings; an empty list means all tapes are clean.
+
+---
+
+## Restore
+
+`RestoreService` reassembles source files from tape back to a restore root directory.
+
+### `load_catalog_from_tape(tape_id: str) -> Catalog`
+
+Loads the named tape, reads `catalog/catalog.json`, deserializes it, and unloads the tape in a `finally` block. Raises `RestoreError` on any failure.
+
+### `restore(catalog, restore_root, filter_glob) -> RestoreReport`
+
+1. **Filter** — select `source_files` whose `relative_path` matches `filter_glob` (fnmatch); if omitted all files are selected.
+2. **Build lookups** — `container_by_id` and `segments_by_container` from filtered segments only.
+3. **Iterate tapes** — sorted by `sequence_number`; tapes with no relevant containers are skipped. Each tape is requested via `TapeSwitchService.request_and_load` so the operator is prompted.
+4. **Per container** — containers on each tape are processed in `tape_offset` order so the drive streams forward. For each segment:
+   - Read in ≤4 MiB chunks via `TapeDrive.read_file_segment(container_id, container_offset + pos, n)`.
+   - Write chunks via `FileSystem.write_segment(restore_root / relative_path, source_offset + pos, chunk)` — offset = 0 creates the file (making parent directories); offset > 0 seeks into the existing file.
+   - Hash the chunk stream with SHA-256 and compare to `segment.sha256`; record an error on mismatch.
+5. **Full-file check** — after all tapes, hash each successfully-restored file and compare to `source_file.sha256`; record an error on mismatch.
+6. Return `RestoreReport(files_requested, files_restored, errors)`. Segment-level errors are non-fatal — other files continue to be restored.
+
+### `RestoreReport`
+
+| Field | Type | Description |
+|---|---|---|
+| `files_requested` | `int` | Number of files selected (after filter) |
+| `files_restored` | `int` | Files where all segments verified clean |
+| `errors` | `list[str]` | Segment or full-file SHA-256 mismatch descriptions |
 
 ---
 
@@ -212,3 +245,13 @@ Required system tools: `ltfs`, `umount`, `mt` (on `$PATH`). Tape must be pre-for
 4. List written files.
 5. Read written files.
 6. Failure injection via `SimulatorFailureConfig`.
+
+## Restore Test Requirements (reference)
+
+1. Single file, single segment, one tape — file reassembled with correct content, no errors.
+2. Single file, two segments in two containers on the same tape — reassembled correctly.
+3. Single file spanning two tapes — both tapes loaded in sequence order, file reassembled.
+4. `filter_glob` — only matching files restored; non-matching files not written.
+5. Segment SHA-256 mismatch — error in report; other files still restored.
+6. `load_catalog_from_tape` — returns deserialized catalog; tape unloaded afterward.
+7. Tape load failure — raises `RestoreError`.

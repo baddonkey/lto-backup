@@ -1,6 +1,8 @@
 import logging
 from pathlib import Path
 
+from lto_backup.exceptions.file_write_error import FileWriteError
+
 logger = logging.getLogger(__name__)
 
 
@@ -28,3 +30,19 @@ class LocalFileSystem:
             data = fh.read(length)
         logger.debug("Read %d bytes from %s", len(data), path)
         return data
+
+    def write_segment(self, path: Path, offset: int, data: bytes) -> None:
+        logger.debug("Writing %d bytes at offset %d to %s", len(data), offset, path)
+        try:
+            if offset == 0:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                with path.open("wb") as fh:
+                    fh.write(data)
+            else:
+                with path.open("r+b") as fh:
+                    fh.seek(offset)
+                    fh.write(data)
+        except OSError as exc:
+            logger.error("Failed to write to %s: %s", path, exc)
+            raise FileWriteError(f"Cannot write to {path}: {exc}") from exc
+        logger.debug("Wrote %d bytes to %s at offset %d", len(data), path, offset)

@@ -10,6 +10,7 @@ A Python 3.12+ application that backs up a file-based records management system 
 - Split files that are larger than one container across container and tape boundaries.
 - Store a full JSON catalog on every tape in the backup set for self-contained recovery.
 - Verify tape contents against the catalog checksums after backup.
+- **Restore** — reassemble any or all files from tape back to disk, with per-segment and full-file SHA-256 verification.
 - Simulate a tape drive on disk for development and testing — no hardware required.
 - Real LTO hardware support via LTFS on Linux.
 - Pluggable design: swap any adapter through dependency injection.
@@ -21,7 +22,7 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -e '.[dev]'
 
-pytest   # 114 tests
+pytest   # 170 tests
 mypy src/ --strict   # 0 issues
 ```
 
@@ -118,6 +119,78 @@ Prerequisites for LTFS mode:
 - `ltfs`, `umount`, and `mt` available on `$PATH`
 - Tape formatted with LTFS: `mkltfs -d /dev/nst0`
 - Mount point exists: `mkdir -p /mnt/lto_tape`
+
+## Restore
+
+`lto-restore` reassembles source files from tape using the catalog that was
+written to every tape at backup time. Each segment is re-hashed during read;
+after all segments are written the full-file SHA-256 is checked against the
+catalog.
+
+### Simulator
+
+```bash
+# Catalog already on disk (e.g. copied from the HTML report directory):
+lto-restore \
+  --simulator /path/to/tape-store \
+  --restore-to /path/to/recovered \
+  --catalog /path/to/tape-store/TAPE-001/catalog/catalog.json
+
+# Catalog read directly from the first tape:
+lto-restore \
+  --simulator /path/to/tape-store \
+  --restore-to /path/to/recovered \
+  --first-tape-id TAPE-001
+
+# Selective restore — only files matching a glob:
+lto-restore \
+  --simulator /path/to/tape-store \
+  --restore-to /path/to/recovered \
+  --catalog catalog.json \
+  --filter "records/case-001/*"
+```
+
+### Real LTO Hardware (Linux, LTFS)
+
+```bash
+lto-restore \
+  --device /dev/nst0 \
+  --mount-point /mnt/lto_tape \
+  --restore-to /path/to/recovered \
+  --first-tape-id TAPE-001
+```
+
+### Python API
+
+```python
+from pathlib import Path
+from lto_backup.wiring.container import build_restore_service
+from lto_backup.config.backup_config import BackupConfig
+
+config = BackupConfig(
+    source_root=Path("/unused"),          # not used by RestoreService
+    tapes_root=Path("/path/to/tape-store"),
+    tape_nominal_capacity_bytes=18 * 1_000_000_000_000,
+    max_container_size_bytes=100 * 1_000_000_000,
+)
+
+service = build_restore_service(config)
+
+# Option A: load catalog from tape
+catalog = service.load_catalog_from_tape("TAPE-001")
+
+# Option B: load catalog from a file on disk
+from lto_backup.infrastructure.catalog.json_catalog_serializer import JsonCatalogSerializer
+catalog = JsonCatalogSerializer().deserialize(
+    Path("catalog.json").read_bytes()
+)
+
+report = service.restore(catalog, restore_root=Path("/path/to/recovered"))
+print(f"{report.files_restored}/{report.files_requested} file(s) restored")
+if report.errors:
+    for e in report.errors:
+        print("ERROR:", e)
+```
 
 ### CLI Flags
 

@@ -11,6 +11,7 @@ dependencies = []
 
 [project.scripts]
 lto-backup = "lto_backup.cli.main:main"
+lto-restore = "lto_backup.cli.restore:restore_main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/lto_backup"]
