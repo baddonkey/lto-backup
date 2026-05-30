@@ -192,3 +192,26 @@ class TestSimulatedRestoreFlow:
 
         assert loaded_catalog.backup_set_id == written_catalog.backup_set_id
         assert len(loaded_catalog.source_files) == 1
+
+    # ------------------------------------------------------------------
+    # Test 7 — zero-byte files are restored as empty files
+    # ------------------------------------------------------------------
+
+    def test_restore_zero_byte_file(self, tmp_path: Path) -> None:
+        source = tmp_path / "source"
+        tapes = tmp_path / "tapes"
+        restored = tmp_path / "restored"
+        source.mkdir()
+        tapes.mkdir()
+        (source / "nonempty.bin").write_bytes(b"content")
+        (source / "empty.log").write_bytes(b"")
+
+        catalog = build_backup_service(_config(source, tapes)).run(
+            _config(source, tapes)
+        )
+        report = _restore_service(tapes).restore(catalog, restore_root=restored)
+
+        assert report.errors == []
+        assert report.files_restored == 2
+        assert (restored / "empty.log").exists()
+        assert (restored / "empty.log").read_bytes() == b""

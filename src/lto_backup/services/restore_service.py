@@ -181,6 +181,21 @@ class RestoreService:
                 self._tape_drive.unload_tape()
 
         # After all tapes: verify full-file SHA-256 for each successfully-restored file.
+        # Zero-byte files have no segments and are never written by the segment loop,
+        # so create them explicitly here before the hash check.
+        for sf in target_files:
+            if sf.size_bytes == 0 and sf.file_id not in files_with_segment_errors:
+                dest = restore_root / sf.relative_path
+                if not dest.exists():
+                    logger.debug("Creating empty file: %s", dest)
+                    try:
+                        self._file_system.write_segment(dest, 0, b"")
+                    except Exception as exc:
+                        msg = f"File {sf.relative_path}: cannot create empty file: {exc}"
+                        logger.warning(msg)
+                        files_with_segment_errors.add(sf.file_id)
+                        all_errors.append(msg)
+
         files_restored = 0
         for sf in target_files:
             if sf.file_id in files_with_segment_errors:

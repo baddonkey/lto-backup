@@ -568,3 +568,41 @@ class TestRestoreEmptyFilterMatch:
         assert report.files_restored == 0
         assert report.errors == []
         assert drive.load_calls == []
+
+
+class TestRestoreZeroByteFile:
+    """Zero-byte files have no segments and must be created as empty files."""
+
+    def setup_method(self) -> None:
+        nonempty_data = b"some content"
+        sf_empty = _make_source_file("f1", "empty.log", b"")
+        sf_full = _make_source_file("f2", "data.bin", nonempty_data)
+        container = _make_container("CNT-001", _T1)
+        seg = _make_segment("seg-001", "f2", "CNT-001", nonempty_data)
+        catalog = Catalog(
+            schema_version="1.0",
+            backup_set_id=_BACKUP_SET_ID,
+            created_at=_CREATED_AT,
+            source_root="/src",
+            tapes=[_make_tape(_T1)],
+            containers=[container],
+            source_files=[sf_empty, sf_full],
+            segments=[seg],
+        )
+        fs = FakeFileSystem()
+        svc, self.drive, self.fs = _build_service(
+            {_T1: {"CNT-001": nonempty_data}}, fs=fs
+        )
+        self.report = svc.restore(catalog, restore_root=Path("/out"))
+
+    def test_no_errors(self) -> None:
+        assert self.report.errors == []
+
+    def test_both_files_restored(self) -> None:
+        assert self.report.files_restored == 2
+
+    def test_empty_file_exists_with_zero_bytes(self) -> None:
+        assert self.fs.get_file_bytes(Path("/out/empty.log")) == b""
+
+    def test_nonempty_file_content_correct(self) -> None:
+        assert self.fs.get_file_bytes(Path("/out/data.bin")) == b"some content"
