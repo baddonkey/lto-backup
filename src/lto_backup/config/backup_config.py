@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 
@@ -8,3 +8,5 @@ class BackupConfig:
     tapes_root: Path
     tape_nominal_capacity_bytes: int
     max_container_size_bytes: int
+    read_retry_attempts: int = field(default=1)
+    read_retry_delay_seconds: float = field(default=0.0)
