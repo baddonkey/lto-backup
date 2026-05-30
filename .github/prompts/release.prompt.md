@@ -1,5 +1,4 @@
 ---
-mode: ask
 description: Cut a new lto-backup release — bump version, tag, push, and create a GitHub release.
 ---
 
