@@ -11,6 +11,7 @@ A Python 3.12+ application that backs up a file-based records management system 
 - Store a full JSON catalog on every tape in the backup set for self-contained recovery.
 - Verify tape contents against the catalog checksums after backup.
 - **Restore** — reassemble any or all files from tape back to disk, with per-segment and full-file SHA-256 verification.
+- Preserve original file timestamps (`mtime`) and Unix permission bits (`unix_mode`) on restore.
 - Simulate a tape drive on disk for development and testing — no hardware required.
 - Real LTO hardware support via LTFS on Linux.
 - Pluggable design: swap any adapter through dependency injection.
@@ -22,7 +23,7 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -e '.[dev]'
 
-pytest   # 216 tests
+pytest   # 255 tests
 mypy src/ --strict   # 0 issues
 ```
 
@@ -150,7 +151,7 @@ Backup complete. 2 tape(s), 1438 file(s).
 
 Each run executes five stages in sequence:
 
-1. **Scan** — `SourceScanner` walks the source directory, hashes every file with SHA-256, and records size and modification time.
+1. **Scan** — `SourceScanner` walks the source directory, hashes every file with SHA-256, and records size, modification time, and Unix permission bits (`unix_mode`).
 2. **Plan** — `BackupPlanner` iterates packing until the serialized catalog size (including all tape, container, and segment entries with 64-char SHA-256 placeholders, plus the 64-byte checksum file) fits within `reserved_catalog_bytes`. This guarantees enough space is reserved on every tape before data is written.
 3. **Hash** — `BackupWriter.compute_sha256s()` reads every source file and pre-computes the SHA-256 of each planned segment. No tape I/O occurs at this stage.
 4. **Write** — `BackupWriter.write()` iterates tapes in sequence. For each tape it loads the tape, writes all containers (reading and verifying source files against their scanned SHA-256 — `SourceFileChangedError` if modified), then writes the full catalog to the tape before unloading it. Each physical tape is loaded exactly once.
@@ -173,7 +174,11 @@ The service retries up to 5 times if the tape drive reports the tape is not load
 `lto-restore` reassembles source files from tape using the catalog that was
 written to every tape at backup time. Each segment is re-hashed during read;
 after all segments are written the full-file SHA-256 is checked against the
-catalog.
+catalog. After each file passes full-file verification, the original modification
+time and Unix permission bits are restored (`mtime` via `os.utime`, `unix_mode`
+via `os.chmod`). On Windows, `os.chmod` only affects the read-only flag; the
+Archive attribute is **not** preserved (Windows sets it automatically on file
+creation).
 
 ### CLI
 
@@ -334,7 +339,7 @@ The catalog is written to every tape as `catalog/catalog.json` (with a companion
 | `source_root` | Absolute path of the source directory |
 | `tapes` | List of tape objects (`tape_id`, `backup_set_id`, `sequence_number`, `nominal_capacity_bytes`, `reserved_catalog_bytes`) |
 | `containers` | List of containers (`container_id`, `backup_set_id`, `tape_id`, `sequence_number`, `tape_offset`, `size_bytes`) |
-| `source_files` | List of source files (`file_id`, `relative_path`, `absolute_path`, `size_bytes`, `sha256`, `modified_at`) |
+| `source_files` | List of source files (`file_id`, `relative_path`, `absolute_path`, `size_bytes`, `sha256`, `modified_at`, `unix_mode`) — `unix_mode` is an integer or `null`; absent in catalogs created before this feature (deserialized as `None`) |
 | `segments` | List of tape segments (`segment_id`, `file_id`, `container_id`, `container_offset`, `source_offset`, `length_bytes`, `sha256`) |
 
 Each segment's `sha256` is the hash of that slice of bytes within the container. Full-file hashes are stored on the `source_files` entries.

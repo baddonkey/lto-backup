@@ -127,6 +127,8 @@ All planned work is complete.
 | 13 | CLI `lto-restore` with `--simulator` / `--device` / `--report-dir` / `--detail` flags | ✓ done |
 | 14 | Simulator integration test (backup → restore) | ✓ done |
 | 15 | `RestoreReportService` (HTML report, container/file detail level) | ✓ done |
+| 16 | `RetryFileSystem` (configurable retry wrapper for `read_segment`) | ✓ done |
+| 17 | File attribute preservation (`unix_mode` in `SourceFile`, `file_mode` / `set_attributes` in `FileSystem`) | ✓ done |
 
 ---
 
@@ -134,7 +136,7 @@ All planned work is complete.
 
 Each backup run executes five stages:
 
-1. **Scan** — `SourceScanner` walks `source_root`, computes SHA-256 for every file, records size and `modified_at`.
+1. **Scan** — `SourceScanner` walks `source_root`, computes SHA-256 for every file, records size, `modified_at`, and `unix_mode` (file permission bits).
 2. **Plan** — `BackupPlanner` uses the iterative packing algorithm to compute `reserved_catalog_bytes`, then packs source files into containers (≤ `max_container_size_bytes` each) and assigns containers to tapes. Files larger than one container are split across container boundaries. Segment `sha256` fields hold 64-char placeholders at planning time.
 3. **Hash** — `BackupWriter.compute_sha256s()` reads every source file, verifies the full-file SHA-256 against the scanned value (`SourceFileChangedError` if modified), and returns a `dict[segment_id, sha256]` of per-segment hashes. No tape I/O occurs.
 4. **Write** — `BackupWriter.write()` accepts a `post_tape_callback: Callable[[TapeDrive], None]`. For each tape it loads the tape, writes all containers (reading and verifying source files), then calls `post_tape_callback` with the still-loaded tape drive before unloading. Each physical tape is handled exactly once. After each container is streamed to the tape, the writer reads it back via `TapeDrive.read_file_segment` and re-hashes the bytes; on mismatch it raises `ContainerVerificationError` and aborts the run.
@@ -176,7 +178,8 @@ Loads the named tape, reads `catalog/catalog.json`, deserializes it, and unloads
      - Write chunks via `FileSystem.write_segment(restore_root / relative_path, source_offset + pos, chunk)` — offset = 0 creates the file (making parent directories); offset > 0 seeks into the existing file.
      - Hash the chunk stream with SHA-256 and compare to `segment.sha256`; record an error on mismatch.
 5. **Full-file check** — after all tapes, hash each successfully-restored file and compare to `source_file.sha256`; record an error on mismatch.
-6. Return `RestoreReport(files_requested, files_restored, errors, failed_paths, container_results)`. Segment-level and container-level errors are non-fatal — other files continue to be restored.
+6. **Attribute restore** — after each file passes full-file verification, `FileSystem.set_attributes(dest, sf.modified_at.timestamp(), sf.unix_mode)` is called to restore the original modification time and permission bits. Failure is non-fatal (logged as a warning; file content is already correct).
+7. Return `RestoreReport(files_requested, files_restored, errors, failed_paths, container_results, hash_failures)`. Segment-level and container-level errors are non-fatal — other files continue to be restored.
 
 ### `ContainerRestoreResult`
 
@@ -198,6 +201,7 @@ Frozen dataclass recording the outcome of the container-level SHA-256 check for 
 | `errors` | `list[str]` | Segment, container, or full-file SHA-256 mismatch descriptions |
 | `failed_paths` | `list[str]` | Relative paths of files that could not be fully restored |
 | `container_results` | `list[ContainerRestoreResult]` | Per-container SHA-256 verification outcomes |
+| `hash_failures` | `list[str]` | Relative paths of files that failed the full-file SHA-256 check |
 
 ### `RestoreReportService`
 
@@ -291,6 +295,7 @@ Required system tools: `ltfs`, `umount`, `mt` (on `$PATH`). Tape must be pre-for
 8. Container SHA-256 match — `ContainerRestoreResult` recorded with `sha256_passed=True`, no errors.
 9. Container SHA-256 mismatch — error recorded, affected files added to `failed_paths`, no segment content written for that container.
 10. No stored container hash (`sha256=""`) — container verification skipped, `sha256_passed=True` recorded.
+11. File attribute preservation — `set_attributes` called with correct path, mtime, and mode after successful restore; not called when file fails hash verification.
 
 ## Restore Report Test Requirements (reference)
 

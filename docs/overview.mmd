@@ -34,6 +34,20 @@ classDiagram
     BackupService ..> Catalog : returns
     BackupPlanner ..> BackupPlan : returns
 
+    class RestoreService {
+        +load_catalog_from_tape(tape_id) Catalog
+        +restore(catalog, restore_root, filter_glob) RestoreReport
+    }
+    class RestoreReportService {
+        +generate(catalog, report, restore_root, filter_glob, output_dir, detail_level) Path
+    }
+    RestoreService --> TapeDrive : uses
+    RestoreService --> FileSystem : uses
+    RestoreService --> FileHasher : uses
+    RestoreService --> CatalogSerializer : uses
+    RestoreService ..> RestoreReport : returns
+    RestoreReportService ..> RestoreReport : takes
+
     %% ── CONFIG ───────────────────────────────────────────
     class BackupConfig {
         +Path source_root
@@ -66,6 +80,7 @@ classDiagram
         +int size_bytes
         +str sha256
         +datetime modified_at
+        +int|None unix_mode
     }
     class TapeSegment {
         +str segment_id
@@ -93,6 +108,20 @@ classDiagram
         +list~Container~ containers
         +list~SourceFile~ source_files
         +list~TapeSegment~ segments
+    }
+    class RestoreReport {
+        +int files_requested
+        +int files_restored
+        +list~str~ errors
+        +list~str~ failed_paths
+        +list~ContainerRestoreResult~ container_results
+        +list~str~ hash_failures
+    }
+    class ContainerRestoreResult {
+        +str container_id
+        +str tape_id
+        +bool sha256_passed
+        +str|None error
     }
 
     BackupPlan "1" o-- "many" Tape
@@ -187,16 +216,36 @@ classDiagram
         <<Protocol>>
         +list_files(root) list~Path~
         +file_size(path) int
+        +file_mode(path) int
         +modified_at_timestamp(path) float
-        +open_for_read(path) bytes
+        +read_segment(path, offset, length) bytes
+        +write_segment(path, offset, data) None
+        +set_attributes(path, mtime_timestamp, unix_mode) None
     }
     class LocalFileSystem {
         +list_files(root) list~Path~
         +file_size(path) int
+        +file_mode(path) int
         +modified_at_timestamp(path) float
-        +open_for_read(path) bytes
+        +read_segment(path, offset, length) bytes
+        +write_segment(path, offset, data) None
+        +set_attributes(path, mtime_timestamp, unix_mode) None
+    }
+    class RetryFileSystem {
+        -FileSystem _inner
+        -int _max_attempts
+        -float _delay_seconds
+        +list_files(root) list~Path~
+        +file_size(path) int
+        +file_mode(path) int
+        +modified_at_timestamp(path) float
+        +read_segment(path, offset, length) bytes
+        +write_segment(path, offset, data) None
+        +set_attributes(path, mtime_timestamp, unix_mode) None
     }
     FileSystem <|.. LocalFileSystem : implements
+    FileSystem <|.. RetryFileSystem : implements
+    RetryFileSystem --> FileSystem : wraps
 
     class FileHasher {
         <<Protocol>>
@@ -250,14 +299,18 @@ classDiagram
     class BackupError { <<Exception>> }
     class BackupPlanError { <<Exception>> }
     class CatalogWriteError { <<Exception>> }
+    class FileReadError { <<Exception>> }
     class FileWriteError { <<Exception>> }
+    class RestoreError { <<Exception>> }
     class SourceFileChangedError { <<Exception>> }
     class TapeFullError { <<Exception>> }
     class TapeNotLoadedError { <<Exception>> }
 
     BackupError <|-- BackupPlanError
     BackupError <|-- CatalogWriteError
+    BackupError <|-- FileReadError
     BackupError <|-- FileWriteError
+    BackupError <|-- RestoreError
     BackupError <|-- SourceFileChangedError
     BackupError <|-- TapeFullError
     BackupError <|-- TapeNotLoadedError
