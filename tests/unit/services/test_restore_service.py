@@ -606,3 +606,114 @@ class TestRestoreZeroByteFile:
 
     def test_nonempty_file_content_correct(self) -> None:
         assert self.fs.get_file_bytes(Path("/out/data.bin")) == b"some content"
+
+
+class TestRestoreContainerHashVerification:
+    """Container SHA-256 is verified before segments are restored."""
+
+    def _make_catalog_with_hash(
+        self, container_data: bytes, stored_hash: str
+    ) -> tuple[Catalog, "FakeTapeDrive", "FakeFileSystem"]:
+        sf = _make_source_file("f1", "doc.txt", container_data)
+        container = Container(
+            container_id="CNT-001",
+            backup_set_id=_BACKUP_SET_ID,
+            tape_id=_T1,
+            sequence_number=1,
+            tape_offset=0,
+            size_bytes=len(container_data),
+            sha256=stored_hash,
+        )
+        seg = _make_segment("seg-001", "f1", "CNT-001", container_data)
+        catalog = Catalog(
+            schema_version="1.0",
+            backup_set_id=_BACKUP_SET_ID,
+            created_at=_CREATED_AT,
+            source_root="/src",
+            tapes=[_make_tape(_T1)],
+            containers=[container],
+            source_files=[sf],
+            segments=[seg],
+        )
+        fs = FakeFileSystem()
+        svc, drive, _ = _build_service({_T1: {"CNT-001": container_data}}, fs=fs)
+        return catalog, drive, fs
+
+    def test_clean_container_hash_produces_no_errors(self) -> None:
+        data = b"clean data"
+        catalog, drive, _ = self._make_catalog_with_hash(data, _sha256(data))
+        svc, _, _ = _build_service({_T1: {"CNT-001": data}})
+        # Re-build with correct catalog
+        fs2 = FakeFileSystem()
+        svc2, _, _ = _build_service({_T1: {"CNT-001": data}}, fs=fs2)
+        report = svc2.restore(catalog, restore_root=Path("/out"))
+
+        assert report.errors == []
+
+    def test_container_result_recorded_as_passed(self) -> None:
+        data = b"good bytes"
+        catalog, _, _ = self._make_catalog_with_hash(data, _sha256(data))
+        fs = FakeFileSystem()
+        svc, _, _ = _build_service({_T1: {"CNT-001": data}}, fs=fs)
+        report = svc.restore(catalog, restore_root=Path("/out"))
+
+        assert len(report.container_results) == 1
+        assert report.container_results[0].sha256_passed is True
+        assert report.container_results[0].error is None
+
+    def test_corrupt_container_hash_records_error(self) -> None:
+        data = b"corrupted on tape"
+        wrong_hash = "a" * 64
+        catalog, _, _ = self._make_catalog_with_hash(data, wrong_hash)
+        fs = FakeFileSystem()
+        svc, _, _ = _build_service({_T1: {"CNT-001": data}}, fs=fs)
+        report = svc.restore(catalog, restore_root=Path("/out"))
+
+        assert len(report.errors) == 1
+        assert "SHA-256 mismatch" in report.errors[0]
+
+    def test_corrupt_container_result_recorded_as_failed(self) -> None:
+        data = b"corrupted on tape"
+        wrong_hash = "a" * 64
+        catalog, _, _ = self._make_catalog_with_hash(data, wrong_hash)
+        fs = FakeFileSystem()
+        svc, _, _ = _build_service({_T1: {"CNT-001": data}}, fs=fs)
+        report = svc.restore(catalog, restore_root=Path("/out"))
+
+        assert report.container_results[0].sha256_passed is False
+        assert report.container_results[0].error is not None
+
+    def test_corrupt_container_marks_file_as_failed(self) -> None:
+        data = b"corrupted on tape"
+        wrong_hash = "a" * 64
+        catalog, _, _ = self._make_catalog_with_hash(data, wrong_hash)
+        fs = FakeFileSystem()
+        svc, _, _ = _build_service({_T1: {"CNT-001": data}}, fs=fs)
+        report = svc.restore(catalog, restore_root=Path("/out"))
+
+        assert report.files_restored == 0
+        assert "doc.txt" in report.failed_paths
+
+    def test_no_container_hash_skips_container_verification(self) -> None:
+        """sha256='' means no hash recorded — container check is skipped."""
+        data = b"data without stored hash"
+        sf = _make_source_file("f1", "doc.txt", data)
+        container = _make_container("CNT-001", _T1, size_bytes=len(data))
+        seg = _make_segment("seg-001", "f1", "CNT-001", data)
+        catalog = Catalog(
+            schema_version="1.0",
+            backup_set_id=_BACKUP_SET_ID,
+            created_at=_CREATED_AT,
+            source_root="/src",
+            tapes=[_make_tape(_T1)],
+            containers=[container],
+            source_files=[sf],
+            segments=[seg],
+        )
+        fs = FakeFileSystem()
+        svc, _, _ = _build_service({_T1: {"CNT-001": data}}, fs=fs)
+        report = svc.restore(catalog, restore_root=Path("/out"))
+
+        assert report.errors == []
+        # A result is still recorded, but sha256_passed is True (no hash to check)
+        assert report.container_results[0].sha256_passed is True

@@ -10,6 +10,11 @@ from lto_backup.config.backup_config import BackupConfig
 from lto_backup.config.logging_config import LoggingConfig
 from lto_backup.exceptions.backup_error import BackupError
 from lto_backup.infrastructure.catalog.json_catalog_serializer import JsonCatalogSerializer
+from lto_backup.services.restore_report_service import (
+    DETAIL_CONTAINER,
+    DETAIL_FILE,
+    RestoreReportService,
+)
 from lto_backup.wiring.container import (
     build_ltfs_restore_service,
     build_restore_service,
@@ -91,6 +96,21 @@ def restore_main() -> None:
         metavar="DIR",
         help="LTFS mount point (required when --device is used).",
     )
+    parser.add_argument(
+        "--report-dir",
+        metavar="DIR",
+        help="Write an HTML restore report to this directory after restore.",
+    )
+    parser.add_argument(
+        "--detail",
+        choices=[DETAIL_CONTAINER, DETAIL_FILE],
+        default=DETAIL_CONTAINER,
+        help=(
+            "Detail level for the restore report: "
+            f"'{DETAIL_CONTAINER}' (default) shows per-container SHA-256 verification; "
+            f"'{DETAIL_FILE}' shows per-file restore status."
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -148,6 +168,17 @@ def restore_main() -> None:
         f"Restore complete. "
         f"{report.files_restored}/{report.files_requested} file(s) restored."
     )
+
+    if args.report_dir:
+        report_path = RestoreReportService().generate(
+            catalog,
+            report,
+            Path(args.restore_to),
+            args.filter,
+            Path(args.report_dir),
+            detail_level=args.detail,
+        )
+        print(f"Report written to {report_path}")
 
     if report.errors:
         for err in report.errors:

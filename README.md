@@ -22,7 +22,7 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -e '.[dev]'
 
-pytest   # 175 tests
+pytest   # 216 tests
 mypy src/ --strict   # 0 issues
 ```
 
@@ -198,6 +198,13 @@ lto-restore \
   --restore-to /path/to/recovered \
   --catalog catalog.json \
   --filter "records/case-001/*"
+
+# With an HTML restore report:
+lto-restore \
+  --simulator /path/to/tape-store \
+  --restore-to /path/to/recovered \
+  --catalog catalog.json \
+  --report-dir /path/to/reports
 ```
 
 #### Real LTO Hardware (Linux, LTFS)
@@ -240,6 +247,21 @@ print(f"{report.files_restored}/{report.files_requested} file(s) restored")
 if report.errors:
     for e in report.errors:
         print("ERROR:", e)
+
+# Optional: generate an HTML restore report
+from lto_backup.services.restore_report_service import (
+    DETAIL_CONTAINER, DETAIL_FILE, RestoreReportService
+)
+
+report_path = RestoreReportService().generate(
+    catalog,
+    report,
+    restore_root=Path("/path/to/recovered"),
+    filter_glob=None,
+    output_dir=Path("/path/to/reports"),
+    detail_level=DETAIL_CONTAINER,   # or DETAIL_FILE for per-file status
+)
+print(f"Report written to {report_path}")
 ```
 
 ### CLI Flags
@@ -250,6 +272,8 @@ if report.errors:
 | `--first-tape-id ID` | one of | Tape ID to load when reading the catalog from tape |
 | `--catalog FILE` | one of | Path to a `catalog.json` file on disk |
 | `--filter GLOB` | no | Restore only files whose relative path matches this fnmatch pattern |
+| `--report-dir DIR` | no | Write an HTML restore report to this directory |
+| `--detail {container,file}` | no | Detail level in the report: `container` (default) or `file` |
 | `--simulator DIR` | one of | Simulator mode: root directory for virtual tapes |
 | `--device DEV` | one of | Hardware mode: tape device path (e.g. `/dev/nst0`) |
 | `--mount-point DIR` | with `--device` | LTFS mount point (e.g. `/mnt/lto_tape`) |
@@ -262,6 +286,7 @@ Example output:
 
 ```
 Restore complete. 1438/1438 file(s) restored.
+Report written to /path/to/reports/restore-report-<backup_set_id>.html
 ```
 
 ---
@@ -358,7 +383,8 @@ src/lto_backup/
     simulator/        SimulatorTapeDrive, VirtualTape, SimulatorFailureConfig
     tape/             LinuxLtoTapeDrive (LTFS)
   services/           Business logic: SourceScanner, BackupPlanner, BackupWriter,
-                      CatalogService, BackupService, VerificationService, TapeSwitchService
+                      CatalogService, BackupService, VerificationService, TapeSwitchService,
+                      ReportService, RestoreService, RestoreReportService
   wiring/             Composition root (container.py)
 tests/
   unit/               Unit tests mirroring src layout

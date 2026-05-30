@@ -8,6 +8,7 @@ from pathlib import Path
 
 from lto_backup.domain.catalog import Catalog
 from lto_backup.domain.container import Container
+from lto_backup.domain.container_restore_result import ContainerRestoreResult
 from lto_backup.domain.restore_report import RestoreReport
 from lto_backup.domain.source_file import SourceFile
 from lto_backup.domain.tape_segment import TapeSegment
@@ -128,6 +129,8 @@ class RestoreService:
         # Collect all errors and track which files have bad segments.
         all_errors: list[str] = []
         files_with_segment_errors: set[str] = set()
+        failed_paths: list[str] = []
+        container_results: list[ContainerRestoreResult] = []
 
         # Process one tape at a time, in sequence_number order.
         tapes_sorted = sorted(catalog.tapes, key=lambda t: t.sequence_number)
@@ -176,6 +179,7 @@ class RestoreService:
                     restore_root,
                     all_errors,
                     files_with_segment_errors,
+                    container_results,
                 )
             finally:
                 self._tape_drive.unload_tape()
@@ -200,6 +204,7 @@ class RestoreService:
         for sf in target_files:
             if sf.file_id in files_with_segment_errors:
                 # Segment-level errors already recorded; skip full-file check.
+                failed_paths.append(sf.relative_path)
                 continue
             dest = restore_root / sf.relative_path
             try:
@@ -208,6 +213,7 @@ class RestoreService:
                 msg = f"File {sf.relative_path}: cannot hash restored file: {exc}"
                 logger.warning(msg)
                 all_errors.append(msg)
+                failed_paths.append(sf.relative_path)
                 continue
             if actual_hash != sf.sha256:
                 msg = (
@@ -216,6 +222,7 @@ class RestoreService:
                 )
                 logger.warning(msg)
                 all_errors.append(msg)
+                failed_paths.append(sf.relative_path)
                 continue
             files_restored += 1
 
@@ -229,6 +236,8 @@ class RestoreService:
             files_requested=files_requested,
             files_restored=files_restored,
             errors=all_errors,
+            failed_paths=failed_paths,
+            container_results=container_results,
         )
 
     def _restore_from_tape(
@@ -240,8 +249,24 @@ class RestoreService:
         restore_root: Path,
         all_errors: list[str],
         files_with_segment_errors: set[str],
+        container_results: list[ContainerRestoreResult],
     ) -> None:
         for container in containers:
+            # Verify container-level SHA-256 if the catalog recorded one.
+            hash_error = self._verify_container_hash(tape_id, container)
+            container_results.append(ContainerRestoreResult(
+                container_id=container.container_id,
+                tape_id=tape_id,
+                sha256_passed=hash_error is None,
+                error=hash_error,
+            ))
+            if hash_error is not None:
+                all_errors.append(hash_error)
+                # Mark every file in this container as failed.
+                for seg in segments_by_container.get(container.container_id, []):
+                    files_with_segment_errors.add(seg.file_id)
+                continue
+
             segs = sorted(
                 segments_by_container.get(container.container_id, []),
                 key=lambda s: s.container_offset,
@@ -253,6 +278,42 @@ class RestoreService:
                 if error is not None:
                     all_errors.append(error)
                     files_with_segment_errors.add(seg.file_id)
+
+    def _verify_container_hash(
+        self,
+        tape_id: str,
+        container: Container,
+    ) -> str | None:
+        """Hash the full container blob and compare against catalog SHA-256.
+
+        Returns an error string on mismatch, or None when the hash matches
+        (or when the catalog has no hash recorded for this container).
+        """
+        if not container.sha256:
+            return None
+        digest = hashlib.sha256()
+        offset = 0
+        remaining = container.size_bytes
+        while remaining > 0:
+            n = min(remaining, _IO_CHUNK_SIZE)
+            piece = self._tape_drive.read_file_segment(
+                container.container_id, offset, n
+            )
+            if not piece:
+                break
+            digest.update(piece)
+            offset += len(piece)
+            remaining -= len(piece)
+        actual = digest.hexdigest()
+        if actual != container.sha256:
+            msg = (
+                f"Tape {tape_id}: container {container.container_id} "
+                f"SHA-256 mismatch "
+                f"(expected {container.sha256}, got {actual})"
+            )
+            logger.warning(msg)
+            return msg
+        return None
 
     def _restore_segment(
         self,

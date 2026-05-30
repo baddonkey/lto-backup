@@ -123,9 +123,10 @@ All planned work is complete.
 | 9 | `wiring/container.py` (DI composition root) | ✓ done |
 | 10 | CLI `lto-backup` with `--simulator` / `--device` flag | ✓ done |
 | 11 | Simulator integration test (backup → verify) | ✓ done |
-| 12 | `RestoreService` | ✓ done |
-| 13 | CLI `lto-restore` with `--simulator` / `--device` flag | ✓ done |
+| 12 | `RestoreService` (with container-level SHA-256 verification) | ✓ done |
+| 13 | CLI `lto-restore` with `--simulator` / `--device` / `--report-dir` / `--detail` flags | ✓ done |
 | 14 | Simulator integration test (backup → restore) | ✓ done |
+| 15 | `RestoreReportService` (HTML report, container/file detail level) | ✓ done |
 
 ---
 
@@ -168,12 +169,25 @@ Loads the named tape, reads `catalog/catalog.json`, deserializes it, and unloads
 1. **Filter** — select `source_files` whose `relative_path` matches `filter_glob` (fnmatch); if omitted all files are selected.
 2. **Build lookups** — `container_by_id` and `segments_by_container` from filtered segments only.
 3. **Iterate tapes** — sorted by `sequence_number`; tapes with no relevant containers are skipped. Each tape is requested via `TapeSwitchService.request_and_load` so the operator is prompted.
-4. **Per container** — containers on each tape are processed in `tape_offset` order so the drive streams forward. For each segment:
-   - Read in ≤4 MiB chunks via `TapeDrive.read_file_segment(container_id, container_offset + pos, n)`.
-   - Write chunks via `FileSystem.write_segment(restore_root / relative_path, source_offset + pos, chunk)` — offset = 0 creates the file (making parent directories); offset > 0 seeks into the existing file.
-   - Hash the chunk stream with SHA-256 and compare to `segment.sha256`; record an error on mismatch.
+4. **Per container** — containers on each tape are processed in `tape_offset` order so the drive streams forward.
+   - **Container hash check** — if `container.sha256` is non-empty, read the entire container blob in ≤4 MiB chunks and verify its SHA-256. On mismatch, record an error, append a `ContainerRestoreResult(sha256_passed=False)`, mark every file whose segments live in this container as a failed path, and skip all segment restores for this container.
+   - If the container hash passes (or no stored hash exists), record a `ContainerRestoreResult(sha256_passed=True)` and restore each segment:
+     - Read in ≤4 MiB chunks via `TapeDrive.read_file_segment(container_id, container_offset + pos, n)`.
+     - Write chunks via `FileSystem.write_segment(restore_root / relative_path, source_offset + pos, chunk)` — offset = 0 creates the file (making parent directories); offset > 0 seeks into the existing file.
+     - Hash the chunk stream with SHA-256 and compare to `segment.sha256`; record an error on mismatch.
 5. **Full-file check** — after all tapes, hash each successfully-restored file and compare to `source_file.sha256`; record an error on mismatch.
-6. Return `RestoreReport(files_requested, files_restored, errors)`. Segment-level errors are non-fatal — other files continue to be restored.
+6. Return `RestoreReport(files_requested, files_restored, errors, failed_paths, container_results)`. Segment-level and container-level errors are non-fatal — other files continue to be restored.
+
+### `ContainerRestoreResult`
+
+Frozen dataclass recording the outcome of the container-level SHA-256 check for a single container.
+
+| Field | Type | Description |
+|---|---|---|
+| `container_id` | `str` | Container identifier |
+| `tape_id` | `str` | Tape the container lives on |
+| `sha256_passed` | `bool` | `True` if hash matched (or no stored hash) |
+| `error` | `str \| None` | Error message when `sha256_passed=False` |
 
 ### `RestoreReport`
 
@@ -181,7 +195,26 @@ Loads the named tape, reads `catalog/catalog.json`, deserializes it, and unloads
 |---|---|---|
 | `files_requested` | `int` | Number of files selected (after filter) |
 | `files_restored` | `int` | Files where all segments verified clean |
-| `errors` | `list[str]` | Segment or full-file SHA-256 mismatch descriptions |
+| `errors` | `list[str]` | Segment, container, or full-file SHA-256 mismatch descriptions |
+| `failed_paths` | `list[str]` | Relative paths of files that could not be fully restored |
+| `container_results` | `list[ContainerRestoreResult]` | Per-container SHA-256 verification outcomes |
+
+### `RestoreReportService`
+
+`RestoreReportService.generate(catalog, restore_report, restore_root, filter_glob, output_dir, detail_level) -> Path`
+
+Produces an HTML report and writes it to `output_dir/restore-report-{backup_set_id}.html`. Returns the written path. Raises `FileWriteError` on I/O failure.
+
+`detail_level` controls the detail section rendered:
+
+| Value | Section rendered | Constant |
+|---|---|---|
+| `"container"` | **Container Verification** table (container ID, tape, size, SHA-256 pass/fail) | `DETAIL_CONTAINER` |
+| `"file"` | **File Status** table (path, size, restored/failed per file) | `DETAIL_FILE` |
+
+Default is `DETAIL_CONTAINER`. The summary section always shows `files_requested`, `files_restored`, `Containers Verified`, and `Containers Failed` regardless of detail level.
+
+The CLI exposes this as `--detail {container,file}` (default: `container`).
 
 ---
 
@@ -255,3 +288,16 @@ Required system tools: `ltfs`, `umount`, `mt` (on `$PATH`). Tape must be pre-for
 5. Segment SHA-256 mismatch — error in report; other files still restored.
 6. `load_catalog_from_tape` — returns deserialized catalog; tape unloaded afterward.
 7. Tape load failure — raises `RestoreError`.
+8. Container SHA-256 match — `ContainerRestoreResult` recorded with `sha256_passed=True`, no errors.
+9. Container SHA-256 mismatch — error recorded, affected files added to `failed_paths`, no segment content written for that container.
+10. No stored container hash (`sha256=""`) — container verification skipped, `sha256_passed=True` recorded.
+
+## Restore Report Test Requirements (reference)
+
+1. `detail_level=DETAIL_CONTAINER` — HTML contains Container Verification section; no File Status section.
+2. `detail_level=DETAIL_FILE` — HTML contains File Status section; no Container Verification section.
+3. Passed container — container table shows pass marker.
+4. Failed container — container table shows fail marker and error message.
+5. Summary always shows `Containers Verified` and `Containers Failed` counts.
+6. Default `detail_level` is `DETAIL_CONTAINER`.
+7. `generate()` writes file; missing output directory is created automatically.
