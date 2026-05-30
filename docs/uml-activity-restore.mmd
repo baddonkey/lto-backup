@@ -1,0 +1,111 @@
+flowchart TD
+    Start([Start]) --> ConfigureLogging
+
+    subgraph Initialisation
+        ConfigureLogging[Configure logging from logging.json]
+        ConfigureLogging --> SetPaths[Set tapes_root and restore_root paths]
+        SetPaths --> CreateConfig[Create BackupConfig]
+        CreateConfig --> BuildService[build_restore_service config\n─ wire LocalFileSystem, Sha256FileHasher,\n  JsonCatalogSerializer, SimulatorTapeDrive\n  or LinuxLtoTapeDrive, TapeSwitchService]
+    end
+
+    BuildService --> CatalogSource{Catalog\nsource?}
+
+    CatalogSource -- "--first-tape-id" --> LoadFromTape
+    CatalogSource -- "--catalog FILE" --> LoadFromDisk[JsonCatalogSerializer.deserialize\nread catalog.json from disk]
+
+    subgraph RestoreService_load ["RestoreService.load_catalog_from_tape(tape_id)"]
+        LoadFromTape[TapeDrive.load_tape tape_id]
+        LoadFromTape --> LoadOK{Tape loaded\nsuccessfully?}
+        LoadOK -- No --> RaiseLoad([Raise RestoreError])
+        LoadOK -- Yes --> ReadJSON[Read catalog/catalog.json from tape]
+        ReadJSON --> Deserialize[JsonCatalogSerializer.deserialize bytes]
+        Deserialize --> UnloadAfterRead[TapeDrive.unload_tape\n— in finally block]
+    end
+
+    UnloadAfterRead --> RunRestore
+    LoadFromDisk --> RunRestore
+
+    subgraph RestoreService_restore ["RestoreService.restore(catalog, restore_root, filter_glob)"]
+        RunRestore[[Enter restore]]
+
+        RunRestore --> FilterFiles
+        subgraph Filter ["Filter source files"]
+            FilterFiles{filter_glob\nprovided?}
+            FilterFiles -- Yes --> ApplyGlob[Select source_files where\nrelative_path matches fnmatch glob]
+            FilterFiles -- No --> AllFiles[Select all source_files]
+            ApplyGlob --> BuildLookups
+            AllFiles --> BuildLookups
+        end
+
+        subgraph Lookups ["Build lookups"]
+            BuildLookups[Build container_by_id map\nBuild segments_by_container map\nfrom filtered segments only]
+        end
+
+        BuildLookups --> TapeLoop[For each Tape\nsorted by sequence_number]
+
+        TapeLoop --> HasContainers{Tape has\nrelevant containers?}
+        HasContainers -- No --> SkipTape[Skip tape]
+        SkipTape --> MoreTapes
+
+        HasContainers -- Yes --> RequestTape
+
+        subgraph TapeSwitchService_request ["TapeSwitchService.request_and_load(tape_id, seq)"]
+            RequestTape[Prompt operator:\nPlease insert tape TAPE-nnn and press Enter]
+            RequestTape --> AttemptLoad[TapeDrive.load_tape tape_id]
+            AttemptLoad --> TapeLoaded{Tape loaded\nsuccessfully?}
+            TapeLoaded -- No, retry --> RetryCount{Retries\n< max_retries?}
+            RetryCount -- Yes --> RequestTape
+            RetryCount -- No --> RaiseNotLoaded([Raise TapeNotLoadedError])
+            TapeLoaded -- Yes --> VerifyTapeID[TapeDrive.read_tape_id]
+            VerifyTapeID --> IDMatch{tape_id\nmatches?}
+            IDMatch -- No, wrong cartridge --> UnloadWrong[TapeDrive.unload_tape]
+            UnloadWrong --> RaiseWrong([Raise WrongTapeError])
+            IDMatch -- Yes --> TapeReady[Tape ready]
+        end
+
+        TapeReady --> ContainerLoop[For each Container on tape\nin tape_offset order]
+
+        subgraph SegmentLoop ["Per-container segment restore"]
+            ContainerLoop --> SegLoop[For each Segment in container]
+            SegLoop --> ChunkLoop[Read ≤ 4 MiB chunk via\nTapeDrive.read_file_segment\ncontainer_offset + pos]
+            ChunkLoop --> WriteChunk[FileSystem.write_segment\nrestore_root / relative_path\nsource_offset + pos, chunk\n— offset 0 creates file + parent dirs]
+            WriteChunk --> HashChunk[Update running SHA-256\nwith chunk bytes]
+            HashChunk --> MoreChunks{More\nchunks?}
+            MoreChunks -- Yes --> ChunkLoop
+            MoreChunks -- No --> CheckSegHash{Segment SHA-256\nmatches catalog?}
+            CheckSegHash -- No --> RecordSegError[Record segment mismatch error\n— non-fatal, continue]
+            CheckSegHash -- Yes --> SegOK[Segment restored OK]
+            RecordSegError --> MoreSegments
+            SegOK --> MoreSegments
+            MoreSegments{More segments\nin container?}
+            MoreSegments -- Yes --> SegLoop
+            MoreSegments -- No --> MoreContainers{More\ncontainers?}
+            MoreContainers -- Yes --> ContainerLoop
+        end
+
+        MoreContainers -- No --> UnloadTape[TapeDrive.unload_tape]
+        UnloadTape --> MoreTapes{More\ntapes?}
+        MoreTapes -- Yes --> TapeLoop
+        MoreTapes -- No --> FileVerifyLoop
+
+        subgraph FileVerifyLoop ["Full-file verification"]
+            FullFileCheck[For each successfully-restored file]
+            FullFileCheck --> HashRestoredFile[Hash restored file on disk\nwith SHA-256]
+            HashRestoredFile --> FileHashOK{SHA-256 matches\nsource_file.sha256?}
+            FileHashOK -- No --> RecordFileError[Record full-file mismatch error]
+            FileHashOK -- Yes --> FileVerified[File verified OK]
+            RecordFileError --> MoreFiles
+            FileVerified --> MoreFiles
+            MoreFiles{More\nfiles?}
+            MoreFiles -- Yes --> FullFileCheck
+            MoreFiles -- No --> BuildReport
+        end
+
+        BuildReport[Build RestoreReport\nfiles_requested, files_restored, errors]
+    end
+
+    BuildReport --> PrintSummary["Print n/N file(s) restored"]
+    PrintSummary --> CheckErrors{Any errors?}
+    CheckErrors -- Yes --> PrintErrors[Print ERROR entries]
+    CheckErrors -- No --> End([End])
+    PrintErrors --> End
