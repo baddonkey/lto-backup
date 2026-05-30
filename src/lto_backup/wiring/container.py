@@ -31,6 +31,16 @@ class StdinUserPrompt:
         print(message)  # noqa: T201 — intentional user-facing output in CLI adapter
 
 
+class AutoconfirmUserPrompt:
+    """UserPrompt that auto-confirms every ask() — used in simulator mode."""
+
+    def ask(self, message: str) -> str:
+        return ""
+
+    def inform(self, message: str) -> None:
+        print(message)  # noqa: T201 — intentional user-facing output in CLI adapter
+
+
 def _build_backup_service_with_drive(config: BackupConfig, tape_drive: TapeDrive) -> BackupService:
     file_system = LocalFileSystem()
     file_hasher = Sha256FileHasher()
@@ -68,6 +78,12 @@ def build_tape_switch_service(tape_drive: TapeDrive) -> TapeSwitchService:
     return TapeSwitchService(tape_drive, prompt)
 
 
+def build_autoconfirm_tape_switch_service(tape_drive: TapeDrive) -> TapeSwitchService:
+    """Wire and return a TapeSwitchService that auto-confirms tape changes (simulator only)."""
+    prompt: UserPrompt = AutoconfirmUserPrompt()
+    return TapeSwitchService(tape_drive, prompt)
+
+
 def _build_verification_service_with_drive(tape_drive: TapeDrive) -> VerificationService:
     serializer = JsonCatalogSerializer()
     file_hasher = Sha256FileHasher()
@@ -91,21 +107,30 @@ def build_ltfs_verification_service(
     return _build_verification_service_with_drive(tape_drive)
 
 
-def _build_restore_service_with_drive(tape_drive: TapeDrive) -> RestoreService:
+def _build_restore_service_with_drive(
+    tape_drive: TapeDrive, autoconfirm: bool = False
+) -> RestoreService:
     serializer = JsonCatalogSerializer()
     file_hasher = Sha256FileHasher()
     file_system = LocalFileSystem()
-    tape_switch = build_tape_switch_service(tape_drive)
+    tape_switch = (
+        build_autoconfirm_tape_switch_service(tape_drive)
+        if autoconfirm
+        else build_tape_switch_service(tape_drive)
+    )
     return RestoreService(tape_drive, tape_switch, serializer, file_hasher, file_system)
 
 
 def build_restore_service(config: BackupConfig) -> RestoreService:
-    """Wire and return a RestoreService backed by the simulator tape drive."""
+    """Wire and return a RestoreService backed by the simulator tape drive.
+
+    Tape changes are auto-confirmed — no operator prompt is needed in simulator mode.
+    """
     tape_drive = SimulatorTapeDrive(
         config.tapes_root,
         config.tape_nominal_capacity_bytes,
     )
-    return _build_restore_service_with_drive(tape_drive)
+    return _build_restore_service_with_drive(tape_drive, autoconfirm=True)
 
 
 def build_ltfs_restore_service(
