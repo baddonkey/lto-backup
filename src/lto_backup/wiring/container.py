@@ -55,15 +55,22 @@ def _make_file_system(config: BackupConfig) -> FileSystem:
     return local
 
 
-def _build_backup_service_with_drive(config: BackupConfig, tape_drive: TapeDrive) -> BackupService:
+def _build_backup_service_with_drive(
+    config: BackupConfig, tape_drive: TapeDrive, autoconfirm: bool = False
+) -> BackupService:
     file_system = _make_file_system(config)
     file_hasher = Sha256FileHasher()
     clock = SystemClock()
     serializer = JsonCatalogSerializer()
+    tape_switch = (
+        build_autoconfirm_tape_switch_service(tape_drive)
+        if autoconfirm
+        else build_tape_switch_service(tape_drive)
+    )
 
     scanner = SourceScanner(file_system, file_hasher, clock)
     planner = BackupPlanner(serializer, clock)
-    writer = BackupWriter(tape_drive, file_system, file_hasher)
+    writer = BackupWriter(tape_drive, file_system, file_hasher, tape_switch)
     catalog_service = CatalogService(serializer, clock)
 
     return BackupService(scanner, planner, writer, catalog_service)
@@ -75,7 +82,7 @@ def build_backup_service(config: BackupConfig) -> BackupService:
         config.tapes_root,
         config.tape_nominal_capacity_bytes,
     )
-    return _build_backup_service_with_drive(config, tape_drive)
+    return _build_backup_service_with_drive(config, tape_drive, autoconfirm=True)
 
 
 def build_ltfs_backup_service(
@@ -83,7 +90,7 @@ def build_ltfs_backup_service(
 ) -> BackupService:
     """Wire and return a BackupService backed by a real LTFS tape drive."""
     tape_drive = LinuxLtoTapeDrive(device, mount_point)
-    return _build_backup_service_with_drive(config, tape_drive)
+    return _build_backup_service_with_drive(config, tape_drive, autoconfirm=False)
 
 
 def build_tape_switch_service(tape_drive: TapeDrive) -> TapeSwitchService:
@@ -98,10 +105,17 @@ def build_autoconfirm_tape_switch_service(tape_drive: TapeDrive) -> TapeSwitchSe
     return TapeSwitchService(tape_drive, prompt)
 
 
-def _build_verification_service_with_drive(tape_drive: TapeDrive) -> VerificationService:
+def _build_verification_service_with_drive(
+    tape_drive: TapeDrive, autoconfirm: bool = False
+) -> VerificationService:
     serializer = JsonCatalogSerializer()
     file_hasher = Sha256FileHasher()
-    return VerificationService(tape_drive, serializer, file_hasher)
+    tape_switch = (
+        build_autoconfirm_tape_switch_service(tape_drive)
+        if autoconfirm
+        else build_tape_switch_service(tape_drive)
+    )
+    return VerificationService(tape_drive, serializer, file_hasher, tape_switch)
 
 
 def build_verification_service(config: BackupConfig) -> VerificationService:
@@ -110,7 +124,7 @@ def build_verification_service(config: BackupConfig) -> VerificationService:
         config.tapes_root,
         config.tape_nominal_capacity_bytes,
     )
-    return _build_verification_service_with_drive(tape_drive)
+    return _build_verification_service_with_drive(tape_drive, autoconfirm=True)
 
 
 def build_ltfs_verification_service(
@@ -118,7 +132,7 @@ def build_ltfs_verification_service(
 ) -> VerificationService:
     """Wire and return a VerificationService backed by a real LTFS tape drive."""
     tape_drive = LinuxLtoTapeDrive(device, mount_point)
-    return _build_verification_service_with_drive(tape_drive)
+    return _build_verification_service_with_drive(tape_drive, autoconfirm=False)
 
 
 def _build_restore_service_with_drive(

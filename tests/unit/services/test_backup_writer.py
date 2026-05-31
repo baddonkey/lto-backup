@@ -139,6 +139,16 @@ class FakeFileHasher:
         return hashlib.sha256(data).hexdigest()
 
 
+class FakeTapeSwitchService:
+    """Delegates load to the fake tape drive so existing call-tracking tests still work."""
+
+    def __init__(self, tape_drive: FakeTapeDrive) -> None:
+        self._tape_drive = tape_drive
+
+    def request_and_load(self, tape_id: str, sequence_number: int) -> None:
+        self._tape_drive.load_tape(tape_id)
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -216,7 +226,8 @@ class TestBackupWriter:
         self.tape_drive = FakeTapeDrive()
         self.file_system = FakeFileSystem()
         self.file_hasher = FakeFileHasher(self.file_system)
-        self.writer = BackupWriter(self.tape_drive, self.file_system, self.file_hasher)
+        self.tape_switch = FakeTapeSwitchService(self.tape_drive)
+        self.writer = BackupWriter(self.tape_drive, self.file_system, self.file_hasher, self.tape_switch)
 
     # Test 1 — single file on single tape
     def test_single_file_single_tape_written_correctly(self) -> None:
@@ -559,7 +570,8 @@ class TestComputeSha256s:
         self.tape_drive = FakeTapeDrive()
         self.file_system = FakeFileSystem()
         self.file_hasher = FakeFileHasher(self.file_system)
-        self.writer = BackupWriter(self.tape_drive, self.file_system, self.file_hasher)
+        self.tape_switch = FakeTapeSwitchService(self.tape_drive)
+        self.writer = BackupWriter(self.tape_drive, self.file_system, self.file_hasher, self.tape_switch)
 
     def test_returns_correct_sha256s_for_all_segments(self) -> None:
         data = b"A" * 100 + b"B" * 100

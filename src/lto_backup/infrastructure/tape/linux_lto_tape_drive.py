@@ -1,5 +1,6 @@
 import errno
 import logging
+import os
 import shutil
 import subprocess
 from collections.abc import Iterator
@@ -97,6 +98,11 @@ class LinuxLtoTapeDrive:
         )
         if eject_result.returncode != 0:
             logger.error("mt offline failed (exit %d): %s", eject_result.returncode, eject_result.stderr)
+            self._mounted = False
+            self._tape_id = ""
+            raise TapeNotLoadedError(
+                f"mt offline failed — tape may still be in drive: {eject_result.stderr}"
+            ) from RuntimeError(eject_result.stderr)
 
         self._mounted = False
         self._tape_id = ""
@@ -165,6 +171,7 @@ class LinuxLtoTapeDrive:
             with dest.open("wb") as fh:
                 for chunk in chunks:
                     fh.write(chunk)
+                os.fsync(fh.fileno())
         except OSError as exc:
             if exc.errno == errno.ENOSPC:
                 raise TapeFullError(

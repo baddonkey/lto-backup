@@ -14,6 +14,7 @@ from lto_backup.domain.verification_report import VerificationReport
 from lto_backup.interfaces.catalog_serializer import CatalogSerializer
 from lto_backup.interfaces.file_hasher import FileHasher
 from lto_backup.interfaces.tape_drive import TapeDrive
+from lto_backup.services.tape_switch_service import TapeSwitchService
 
 logger = logging.getLogger(__name__)
 
@@ -30,10 +31,12 @@ class VerificationService:
         tape_drive: TapeDrive,
         serializer: CatalogSerializer,
         file_hasher: FileHasher,
+        tape_switch_service: TapeSwitchService,
     ) -> None:
         self._tape_drive = tape_drive
         self._serializer = serializer
         self._file_hasher = file_hasher
+        self._tape_switch_service = tape_switch_service
 
     def verify(self, catalog: Catalog) -> VerificationReport:
         logger.info(
@@ -53,7 +56,7 @@ class VerificationService:
     def _verify_tape(self, catalog: Catalog, tape: Tape) -> TapeCheck:
         loaded = False
         try:
-            self._tape_drive.load_tape(tape.tape_id)
+            self._tape_switch_service.request_and_load(tape.tape_id, tape.sequence_number)
             loaded = True
             catalog_passed, catalog_error = self._check_catalog_checksum(tape.tape_id)
             container_results = self._check_containers(catalog, tape.tape_id)

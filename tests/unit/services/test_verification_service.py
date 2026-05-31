@@ -92,6 +92,16 @@ class FakeCatalogSerializer:
         raise NotImplementedError
 
 
+class FakeTapeSwitchService:
+    """Delegates load to the fake tape drive so existing call-tracking tests still work."""
+
+    def __init__(self, tape_drive: FakeTapeDrive) -> None:
+        self._tape_drive = tape_drive
+
+    def request_and_load(self, tape_id: str, sequence_number: int) -> None:
+        self._tape_drive.load_tape(tape_id)
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -166,7 +176,8 @@ def _make_service(
     fail_load: set[str] | None = None,
 ) -> tuple[VerificationService, FakeTapeDrive]:
     drive = FakeTapeDrive(tapes_data, fail_load)
-    svc = VerificationService(drive, FakeCatalogSerializer(), FakeFileHasher())
+    tape_switch = FakeTapeSwitchService(drive)
+    svc = VerificationService(drive, FakeCatalogSerializer(), FakeFileHasher(), tape_switch)
     return svc, drive
 
 

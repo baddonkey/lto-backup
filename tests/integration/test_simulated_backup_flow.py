@@ -11,7 +11,7 @@ from lto_backup.infrastructure.simulator.simulator_tape_drive import SimulatorTa
 from lto_backup.services.backup_planner import BackupPlanner
 from lto_backup.services.source_scanner import SourceScanner
 from lto_backup.services.verification_service import VerificationService
-from lto_backup.wiring.container import build_backup_service
+from lto_backup.wiring.container import build_backup_service, build_verification_service
 
 # Large enough that the JSON catalog overhead is negligible relative to file data.
 _TAPE_NOMINAL = 10_000
@@ -27,11 +27,7 @@ def _config(source: Path, tapes: Path, capacity: int = _TAPE_NOMINAL) -> BackupC
 
 
 def _verifier(tapes: Path, capacity: int = _TAPE_NOMINAL) -> VerificationService:
-    return VerificationService(
-        SimulatorTapeDrive(tapes, capacity),
-        JsonCatalogSerializer(),
-        Sha256FileHasher(),
-    )
+    return build_verification_service(_config(tapes, tapes, capacity))
 
 
 def _probe_usable_capacity(

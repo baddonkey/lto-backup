@@ -22,6 +22,7 @@ from lto_backup.exceptions.tape_not_loaded_error import TapeNotLoadedError
 from lto_backup.interfaces.file_hasher import FileHasher
 from lto_backup.interfaces.file_system import FileSystem
 from lto_backup.interfaces.tape_drive import TapeDrive
+from lto_backup.services.tape_switch_service import TapeSwitchService
 
 logger = logging.getLogger(__name__)
 
@@ -34,10 +35,12 @@ class BackupWriter:
         tape_drive: TapeDrive,
         file_system: FileSystem,
         file_hasher: FileHasher,
+        tape_switch_service: TapeSwitchService,
     ) -> None:
         self._tape_drive = tape_drive
         self._file_system = file_system
         self._file_hasher = file_hasher
+        self._tape_switch_service = tape_switch_service
 
     def compute_sha256s(
         self, plan: BackupPlan
@@ -178,10 +181,10 @@ class BackupWriter:
                 len(tape_containers),
             )
             try:
-                self._tape_drive.load_tape(tape.tape_id)
+                self._tape_switch_service.request_and_load(tape.tape_id, tape.sequence_number)
             except TapeNotLoadedError as exc:
                 raise BackupPlanError(
-                    f"Tape {tape.tape_id!r} referenced in plan could not be loaded."
+                    f"Tape {tape.tape_id!r} could not be loaded after retries."
                 ) from exc
 
             bytes_written = 0
