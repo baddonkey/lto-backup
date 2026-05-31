@@ -110,6 +110,61 @@ class TestLinuxLtoTapeDriveWriteBytes:
         assert (tmp_path / "data" / "hello.bin").read_bytes() == b"hello"
 
 
+class TestLinuxLtoTapeDriveLoadTapeIdMismatchCleanup:
+    def test_load_tape_calls_umount_on_id_mismatch(self, tmp_path: Path) -> None:
+        """LTFS is mounted before the mismatch is detected; it must be unmounted."""
+        tape_id_file = tmp_path / ".tape_id"
+        tape_id_file.write_text("DIFFERENT-TAPE")
+        drive = LinuxLtoTapeDrive(_DEVICE, tmp_path)
+        calls: list[list[str]] = []
+
+        def fake_run(cmd: list[str], **_: object) -> CompletedProcess[str]:
+            calls.append(cmd)
+            return _ok()
+
+        with patch("subprocess.run", side_effect=fake_run):
+            with pytest.raises(TapeNotLoadedError):
+                drive.load_tape(_TAPE_ID)
+
+        # First call mounts (ltfs), second call must be umount cleanup.
+        assert len(calls) == 2
+        assert calls[1][0] == "umount"
+
+    def test_load_tape_id_mismatch_leaves_drive_unmounted(self, tmp_path: Path) -> None:
+        """After mismatch the drive object must not consider itself mounted."""
+        tape_id_file = tmp_path / ".tape_id"
+        tape_id_file.write_text("DIFFERENT-TAPE")
+        drive = LinuxLtoTapeDrive(_DEVICE, tmp_path)
+        with patch("subprocess.run", return_value=_ok()):
+            with pytest.raises(TapeNotLoadedError):
+                drive.load_tape(_TAPE_ID)
+        with pytest.raises(TapeNotLoadedError):
+            drive.current_tape_id()
+
+
+class TestLinuxLtoTapeDriveWriteBytesSubdirectory:
+    def _loaded_drive(self, tmp_path: Path) -> LinuxLtoTapeDrive:
+        drive = LinuxLtoTapeDrive(_DEVICE, tmp_path)
+        with patch("subprocess.run", return_value=_ok()):
+            drive.load_tape(_TAPE_ID)
+        return drive
+
+    def test_write_bytes_creates_subdirectory_and_writes_file(self, tmp_path: Path) -> None:
+        drive = self._loaded_drive(tmp_path)
+        drive.write_bytes("catalog/catalog.json", b'{"test": true}')
+        assert (tmp_path / "data" / "catalog" / "catalog.json").read_bytes() == b'{"test": true}'
+
+    def test_write_bytes_creates_nested_subdirectory(self, tmp_path: Path) -> None:
+        drive = self._loaded_drive(tmp_path)
+        drive.write_bytes("a/b/c.bin", b"deep")
+        assert (tmp_path / "data" / "a" / "b" / "c.bin").read_bytes() == b"deep"
+
+    def test_write_stream_creates_subdirectory(self, tmp_path: Path) -> None:
+        drive = self._loaded_drive(tmp_path)
+        drive.write_stream("catalog/catalog.sha256", 5, iter([b"hello"]))
+        assert (tmp_path / "data" / "catalog" / "catalog.sha256").read_bytes() == b"hello"
+
+
 class TestLinuxLtoTapeDriveCurrentTapeId:
     def test_current_tape_id_returns_correct_id_when_mounted(self, tmp_path: Path) -> None:
         drive = LinuxLtoTapeDrive(_DEVICE, tmp_path)

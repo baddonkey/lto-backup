@@ -54,7 +54,13 @@ class LinuxLtoTapeDrive:
             stored_id = tape_id_path.read_text().strip()
             if stored_id and stored_id != tape_id:
                 logger.error(
-                    "Tape ID mismatch: expected %r, got %r", tape_id, stored_id
+                    "Tape ID mismatch: expected %r, got %r — unmounting.", tape_id, stored_id
+                )
+                subprocess.run(
+                    ["umount", str(self._mount_point)],
+                    check=False,
+                    capture_output=True,
+                    text=True,
                 )
                 raise TapeNotLoadedError(
                     f"Tape ID mismatch: expected {tape_id!r}, found {stored_id!r} on tape."
@@ -118,6 +124,7 @@ class LinuxLtoTapeDrive:
     def write_file(self, source_path: Path, destination_name: str) -> None:
         self._require_mounted()
         dest = self._data_dir() / destination_name
+        dest.parent.mkdir(parents=True, exist_ok=True)
         try:
             shutil.copy2(source_path, dest)
         except OSError as exc:
@@ -134,6 +141,7 @@ class LinuxLtoTapeDrive:
     def write_bytes(self, destination_name: str, data: bytes) -> None:
         self._require_mounted()
         dest = self._data_dir() / destination_name
+        dest.parent.mkdir(parents=True, exist_ok=True)
         try:
             dest.write_bytes(data)
         except OSError as exc:
@@ -152,6 +160,7 @@ class LinuxLtoTapeDrive:
     ) -> None:
         self._require_mounted()
         dest = self._data_dir() / destination_name
+        dest.parent.mkdir(parents=True, exist_ok=True)
         try:
             with dest.open("wb") as fh:
                 for chunk in chunks:
