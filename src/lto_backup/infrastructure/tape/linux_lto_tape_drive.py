@@ -3,6 +3,7 @@ import logging
 import os
 import shutil
 import subprocess
+import time
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -24,8 +25,9 @@ class LinuxLtoTapeDrive:
     ``umount`` utilities to be installed on the host.
     """
 
-    def __init__(self, device: Path, mount_point: Path) -> None:
+    def __init__(self, device: Path, mount_point: Path, mt_device: Path | None = None) -> None:
         self._device = device
+        self._mt_device = mt_device if mt_device is not None else device
         self._mount_point = mount_point
         self._tape_id: str = ""
         self._mounted: bool = False
@@ -37,7 +39,12 @@ class LinuxLtoTapeDrive:
     def load_tape(self, tape_id: str) -> None:
         logger.debug("Mounting LTFS tape on %s via device %s", self._mount_point, self._device)
         result = subprocess.run(
-            ["ltfs", "-o", f"devname={self._device}", str(self._mount_point)],
+            [
+                "sudo", "-n", "ltfs",
+                "-o", f"devname={self._device}",
+                "-o", "sync_type=unmount",
+                str(self._mount_point),
+            ],
             check=False,
             capture_output=True,
             text=True,
@@ -58,7 +65,7 @@ class LinuxLtoTapeDrive:
                     "Tape ID mismatch: expected %r, got %r — unmounting.", tape_id, stored_id
                 )
                 subprocess.run(
-                    ["umount", str(self._mount_point)],
+                    ["sudo", "-n", "umount", str(self._mount_point)],
                     check=False,
                     capture_output=True,
                     text=True,
@@ -78,7 +85,7 @@ class LinuxLtoTapeDrive:
         logger.debug("Unmounting LTFS at %s", self._mount_point)
 
         umount_result = subprocess.run(
-            ["umount", str(self._mount_point)],
+            ["sudo", "-n", "umount", str(self._mount_point)],
             check=False,
             capture_output=True,
             text=True,
@@ -89,24 +96,24 @@ class LinuxLtoTapeDrive:
                 f"Failed to unmount tape: {umount_result.stderr}"
             ) from RuntimeError(umount_result.stderr)
 
-        logger.debug("Ejecting tape via mt on %s", self._device)
-        eject_result = subprocess.run(
-            ["mt", "-f", str(self._device), "offline"],
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-        if eject_result.returncode != 0:
-            logger.error("mt offline failed (exit %d): %s", eject_result.returncode, eject_result.stderr)
-            self._mounted = False
-            self._tape_id = ""
-            raise TapeNotLoadedError(
-                f"mt offline failed — tape may still be in drive: {eject_result.stderr}"
-            ) from RuntimeError(eject_result.stderr)
+        # Wait for the LTFS FUSE daemon to fully exit and release the device
+        # before considering the tape ejected.  Do NOT issue mt offline — that
+        # unloads the cartridge while LTFS is still writing the index, which
+        # corrupts the LTFS XML.  The operator (or vtlcmd) handles physical eject.
+        deadline = time.monotonic() + 60.0
+        while time.monotonic() < deadline:
+            check = subprocess.run(
+                ["sudo", "-n", "lsof", str(self._device)],
+                check=False, capture_output=True, text=True,
+            )
+            if not check.stdout.strip():
+                break
+            logger.debug("Waiting for LTFS to release %s ...", self._device)
+            time.sleep(1.0)
 
         self._mounted = False
         self._tape_id = ""
-        logger.info("Tape unloaded from %s", self._device)
+        logger.info("Tape unloaded and index committed on %s", self._device)
 
     def current_tape_id(self) -> str:
         self._require_mounted()

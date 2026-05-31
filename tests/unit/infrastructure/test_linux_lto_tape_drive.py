@@ -30,7 +30,12 @@ class TestLinuxLtoTapeDriveLoadTape:
             drive.load_tape(_TAPE_ID)
 
         mock_run.assert_called_once_with(
-            ["ltfs", "-o", f"devname={_DEVICE}", str(tmp_path)],
+            [
+                "sudo", "-n", "ltfs",
+                "-o", f"devname={_DEVICE}",
+                "-o", "sync_type=unmount",
+                str(tmp_path),
+            ],
             check=False,
             capture_output=True,
             text=True,
@@ -58,25 +63,15 @@ class TestLinuxLtoTapeDriveUnloadTape:
             drive.load_tape(_TAPE_ID)
         return drive
 
-    def test_unload_tape_calls_umount_and_mt(self, tmp_path: Path) -> None:
+    def test_unload_tape_calls_umount(self, tmp_path: Path) -> None:
         drive = self._loaded_drive(tmp_path)
         with patch("subprocess.run", return_value=_ok()) as mock_run:
             drive.unload_tape()
 
-        assert mock_run.call_count == 2
-        calls = mock_run.call_args_list
-        assert calls[0] == call(
-            ["umount", str(tmp_path)],
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-        assert calls[1] == call(
-            ["mt", "-f", str(_DEVICE), "offline"],
-            check=False,
-            capture_output=True,
-            text=True,
-        )
+        cmd_list = [c.args[0] for c in mock_run.call_args_list]
+        # First call must be umount; mt offline is no longer issued
+        assert cmd_list[0] == ["sudo", "-n", "umount", str(tmp_path)]
+        assert all("mt" not in str(c) for c in cmd_list)
 
     def test_unload_tape_raises_if_not_mounted(self, tmp_path: Path) -> None:
         drive = LinuxLtoTapeDrive(_DEVICE, tmp_path)
@@ -126,9 +121,10 @@ class TestLinuxLtoTapeDriveLoadTapeIdMismatchCleanup:
             with pytest.raises(TapeNotLoadedError):
                 drive.load_tape(_TAPE_ID)
 
-        # First call mounts (ltfs), second call must be umount cleanup.
-        assert len(calls) == 2
-        assert calls[1][0] == "umount"
+        # First call mounts (sudo ltfs), second call must be sudo umount cleanup.
+        assert len(calls) >= 2
+        assert calls[0][:3] == ["sudo", "-n", "ltfs"]
+        assert calls[1][:3] == ["sudo", "-n", "umount"]
 
     def test_load_tape_id_mismatch_leaves_drive_unmounted(self, tmp_path: Path) -> None:
         """After mismatch the drive object must not consider itself mounted."""

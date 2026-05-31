@@ -86,10 +86,10 @@ def build_backup_service(config: BackupConfig) -> BackupService:
 
 
 def build_ltfs_backup_service(
-    config: BackupConfig, device: Path, mount_point: Path
+    config: BackupConfig, device: Path, mount_point: Path, mt_device: Path | None = None
 ) -> BackupService:
     """Wire and return a BackupService backed by a real LTFS tape drive."""
-    tape_drive = LinuxLtoTapeDrive(device, mount_point)
+    tape_drive = LinuxLtoTapeDrive(device, mount_point, mt_device=mt_device)
     return _build_backup_service_with_drive(config, tape_drive, autoconfirm=False)
 
 
@@ -128,10 +128,10 @@ def build_verification_service(config: BackupConfig) -> VerificationService:
 
 
 def build_ltfs_verification_service(
-    config: BackupConfig, device: Path, mount_point: Path
+    config: BackupConfig, device: Path, mount_point: Path, mt_device: Path | None = None
 ) -> VerificationService:
     """Wire and return a VerificationService backed by a real LTFS tape drive."""
-    tape_drive = LinuxLtoTapeDrive(device, mount_point)
+    tape_drive = LinuxLtoTapeDrive(device, mount_point, mt_device=mt_device)
     return _build_verification_service_with_drive(tape_drive, autoconfirm=False)
 
 
@@ -162,9 +162,9 @@ def build_restore_service(config: BackupConfig) -> RestoreService:
 
 
 def build_ltfs_restore_service(
-    config: BackupConfig, device: Path, mount_point: Path
+    config: BackupConfig, device: Path, mount_point: Path, mt_device: Path | None = None
 ) -> RestoreService:
     """Wire and return a RestoreService backed by a real LTFS tape drive."""
-    tape_drive = LinuxLtoTapeDrive(device, mount_point)
+    tape_drive = LinuxLtoTapeDrive(device, mount_point, mt_device=mt_device)
     return _build_restore_service_with_drive(config, tape_drive)
 

@@ -97,6 +97,12 @@ def restore_main() -> None:
         help="LTFS mount point (required when --device is used).",
     )
     parser.add_argument(
+        "--mt-device",
+        metavar="DEV",
+        help="Tape device for mt commands (e.g. /dev/nst0). Defaults to --device. "
+             "Needed when --device is a SCSI generic device (e.g. /dev/sg0).",
+    )
+    parser.add_argument(
         "--report-dir",
         metavar="DIR",
         help="Write an HTML restore report to this directory after restore.",
@@ -141,6 +147,7 @@ def restore_main() -> None:
                 config,
                 device=Path(args.device),
                 mount_point=Path(args.mount_point),
+                mt_device=Path(args.mt_device) if args.mt_device else None,
             )
 
         if args.catalog:

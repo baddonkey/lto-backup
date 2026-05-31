@@ -29,6 +29,8 @@ For every implemented class, cover:
 
 ## Running
 
+Run tests in the .venv with `pytest` — it auto-discovers tests and provides rich output. Use these commands:
+
 ```bash
 pytest               # all tests
 pytest tests/unit/   # unit only
