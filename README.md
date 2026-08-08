@@ -404,3 +404,16 @@ tests/
 - `typing.Protocol` interfaces for every infrastructure boundary.
 - Domain objects are frozen dataclasses, free of I/O concerns.
 - Strict mypy type checking (`mypy --strict`).
+
+## Quicksample for the simulator
+
+Backup
+```
+lto-backup --source .\Downloads --simulator .\temp\tape-output --capacity-tb 0.010 --container-size-gb 1
+```
+Restore
+```
+lto-restore --simulator .\temp\tape-output --restore-to .\restore-test --first-tape-id TAPE-e5dec420-eee9-44e7-acd1-e34f1cd86990-001 --report-dir .\temp\restore-report --detail file
+```
+
+
